@@ -1,0 +1,3656 @@
+#---
+title: "CAR T flow data: clustering analysis and viz"
+authors: "Hugh MacMillan, Carla Jaeger"
+date: "2023-12-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+ rm(list=ls() ) ### MAYBE START FRESH?
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Packages and installs.... 
+
+
+```{r } 
+
+
+do_installs <- TRUE
+
+#-----------------------packages----------------
+
+
+if (do_installs) {
+  
+  if (!require("tidyverse")) {
+    install.packages("tidyverse", dependencies = TRUE)
+  }
+
+    if (!require(flowCore)) { 
+    
+    if(!require(robustbase)){
+      install.packages("robustbase")
+    }
+    BiocManager::install("flowCore")
+    } 
+  
+  if (!require(Rphenograph)) {
+    if(!require(devtools)){
+      install.packages("devtools")
+    }
+    options(buildtools.check = function(action) TRUE )
+    devtools::install_github("JinmiaoChenLab/Rphenograph")
+    options(buildtools.check = function(action) FALSE )
+  }
+  
+  
+  if (!require(ggthemes)) {
+    install.packages("ggthemes")
+  }
+
+  
+    if (!requireNamespace("leiden")) {devtools::install_github("TomKellyGenetics/leiden")}
+  #install.packages("leiden")
+
+  
+  
+  
+  library(leiden)
+  library(Rphenograph)
+  library(RANN)
+  library(flowCore)
+  library(robustbase)
+  library(knitr)
+  library(tidyverse)
+  library(dplyr)
+  library(rstatix)
+  library(ggthemes)
+  library(png)
+  library(uwot)
+library(scales)
+  
+  
+  }
+
+```
+
+# set environment
+
+```{r, echo=FALSE} 
+
+
+  getwd()
+#  setwd("~/Newell_Lab/Jaeger_P9330/src/") 
+  
+
+#  source("~/Newell_Lab/Jaeger_P9330/src/mc_functions.R")
+  
+
+```
+
+# run params --- uniform across 0_.Rmd, 1_.Rmd, 2_.Rmd ...
+
+```{r }
+
+
+  # SET RUN PARAMETERS ------------------------------------------------------
+  
+  subsets <- c("T")
+  
+  panels <- c("CART")
+  panel_here <- panels[1]
+  subtype <- subsets[1]
+  
+  T_subtype <- "CD8"
+#    T_subtype <- ""
+  
+  sample_N <- 13000 # MAX no. of cells drawn per fcs originially.
+  sample_label <- "13k"  # redundancy to stay on toes ... 
+
+  
+#  INIT CLUSTERING PHENOGRAPH PARAM
+  k_here <- 40
+#  INIT SUBCLUSTERING PHENOGRAPH PARAM
+  k_here_sub <- 20
+#  META CLUSTERING PHENOGRAPH PARAM
+  meta_k_here <- 20 
+#  ONLY DOING DISTANCE AS THE CROW FLIES -- l2
+  p_of_lp_norm <- 2 
+#  
+  
+  just_do_metaclustering <- FALSE
+  # IF ALREADY RUN WITH TRUE AND JUST DOING METACLUSTERING AGAIN
+  run_id <- "raw5alt"
+#  run_id
+  
+  run_id %>% print()
+  
+  meta_id <- "we_cent_spline"
+
+  do_filter_outliers <- TRUE
+  if (do_filter_outliers) print("filtering outliers first")
+  do_shift_tings <- str_detect(meta_id,"cent")
+  if (do_shift_tings) print("centering involved")
+  do_spline_tings <- str_detect(meta_id,"spline")
+  if (do_spline_tings) print("splines involved")
+  
+```
+
+# load dataframe for global clustering ---- 
+
+```{r, echo=FALSE} 
+print("run_id")
+print(run_id)
+subtype
+
+print(paste0("",panel_here," ",subtype," cell data from Dr. Carla Jaeger, Riddell Lab"))
+
+
+
+print("#----- more prep for plots ------")
+subtype
+T_subtype
+plot_path_now <- paste0("../plots_",subtype,"_",T_subtype) 
+plot_path_now
+
+#suppressWarnings(dir.create(plot_path_now))
+
+
+details_now <- paste0(T_subtype,"_",subtype,"_cells_",
+                      sample_label,"_",k_here,"_",k_here_sub,"_meta_",meta_k_here,"_",run_id,"_",meta_id)
+
+do_scaling_z_score <- FALSE
+if (do_scaling_z_score) {
+  details_now <- paste0(details_now,"_scaled")
+} else {
+  details_now <- paste0(details_now,"_unscaled")
+}  
+
+
+
+data_path_prepped <- "../output_data"
+plot_path_now_details <- paste0(plot_path_now,"/",details_now) 
+
+plot_path_now_details_data <- paste0(plot_path_now_details,"/data")
+
+
+list.files(plot_path_now_details_data)
+
+params_now <- read_csv(paste0(plot_path_now_details_data,"/params_now.csv"))
+params_now$params_now
+params_now <- params_now$params_now
+params_now
+
+
+df_bound_new <- read_csv(paste0(plot_path_now_details_data,"/df_bound.csv"))
+
+
+
+```
+
+# Cluster and go  ---- 
+
+```{r, echo=FALSE} 
+
+
+
+df_bound_look_close <- df_bound_new  %>% dplyr::filter(!str_detect(file,"CTRL"))
+
+df_bound_look_close$file %>% unique()
+
+
+k_here_zoom <- 40
+
+
+do_subsample <- TRUE
+
+
+df_rebound_s_bound <- NULL
+
+df_rebound_s_bound %>% dim()
+
+#df_bound_look_close
+  
+batches <- df_bound_new$sub_batch %>% unique()
+
+  
+for (batch_in in batches) {
+  print("hooray")
+  #        batch_in <- batches[7]
+  #      subtype <- subsets[2]
+  #      subtype
+  sub_samp_size <- 6000    
+  
+  #    df_bound$s
+  
+  df_rebound_b <- df_bound_look_close %>% dplyr::filter(sub_batch == batch_in)
+  print(paste0("---------",batch_in,"----------------------"))
+  dim(df_rebound_b)[1] %>% print()
+  
+  
+  samples_here <- df_rebound_b$file %>% unique()
+  #    samples_here %>% length()
+  #    samples_here_HD <- samples_here[str_detect(samples_here,"HD")]
+  #    five_other_samps <- setdiff(samples_here,samples_here_HD)
+  #    five_other_samps <- five_other_samps[1:5]
+  #    five_other_samps
+  #    samples_here_to_sample <- c(samples_here_HD,five_other_samps)
+  
+  df_temp_bound <- NULL
+  for (sample_id_here in samples_here) {
+    print(paste0("....",sample_id_here))
+    df_rebound_b_samp <- df_rebound_b %>% dplyr::filter(file == sample_id_here)
+    sub_samp_size_here <- min(sub_samp_size,dim(df_rebound_b_samp)[1])
+    
+    df_rebound_b_samp <- df_rebound_b_samp[sample(nrow(df_rebound_b_samp), sub_samp_size_here), ]
+    ?sample()
+    #df_rebound_s$batch <- batch_in
+    
+    df_temp_bound <- rbind.data.frame(df_temp_bound,df_rebound_b_samp)
+  }
+  df_rebound_s_bound  <- rbind.data.frame(df_rebound_s_bound,df_temp_bound)
+}
+
+
+df_bound_look_close_sub <- df_rebound_s_bound
+
+
+# ----------------- local phenograph funk ---- 
+
+#----------- jaccard_coeff for in house Phenograph ------- ------- 
+
+jaccard_coeff <- function(idx) {
+  .Call('Rphenograph_jaccard_coeff', PACKAGE = 'Rphenograph', idx)
+}
+
+#method_here <- "Louvain"
+#data <- df_to_cluster_s
+
+#------------in house phenograph ---------- ---------
+
+Rphenograph_local <- function(data, k=30,rez = 1,method_here = method_here,p_here){
+  if(is.data.frame(data))
+    data <- as.matrix(data)
+  
+  if(!is.matrix(data))
+    stop("Wrong input data, should be a data frame of matrix!")
+  
+  #k = 30
+  if(k<1){
+    stop("k must be a positive integer!")
+  }else if (k > nrow(data)-2){
+    stop("k must be smaller than the total number of points!")
+  }
+  
+  message("Run Rphenograph starts:","\n", 
+          "  -Input data of ", nrow(data)," rows and ", ncol(data), " columns","\n",
+          "  -k is set to ", k,"\n",
+          "  -rez is set to ", rez,"\n",
+          "  -lp is set to l",p_here)
+  
+  cat("  Finding nearest neighbors...")
+  t1 <- system.time(neighborMatrix <- find_neighbors(data, k=k+1,p_here)[,-1])
+  #neighborMatrix
+  cat("DONE ~",t1[3],"s\n", " Compute jaccard coefficient between nearest-neighbor sets...")
+  t2 <- system.time(links <- jaccard_coeff(neighborMatrix))
+  #?Rphenograph::jaccard_coef()
+  cat("DONE ~",t2[3],"s\n", " Build undirected graph from the weighted links...")
+  links <- links[links[,1]>0, ]
+  
+  relations <- as.data.frame(links)
+  #  relations
+  
+  colnames(relations)<- c("from","to","weight")
+  t3 <- system.time(g <- graph.data.frame(relations, directed=FALSE))
+  
+  # Other community detection algorithms: 
+  #    cluster_walktrap, cluster_spinglass, 
+  #    cluster_leading_eigen, cluster_edge_betweenness, 
+  #    cluster_fast_greedy, cluster_label_prop  
+  
+  cat("DONE ~",t3[3],"s\n", "Run ",method_here," clustering on the graph ...")
+  
+  if (method_here == "Louvain") {
+    t4 <- system.time(community <- cluster_louvain(g))
+    cat("  Return a community class\n  - Modularity value:", modularity(community),"\n")
+    cat("  -Number of clusters:", length(unique(membership(community))),"\n")
+  }
+  
+  #  community$membership %>% as.vector() %>% unique() %>% sort() %>% print()
+  #  modules <- reticulate::py_module_available("leidenalg") && reticulate::py_module_available("igraph")
+  #  modules
+  if (method_here == "Leiden") {
+    #    adjacency_matrix <- igraph::as_adjacency_matrix(g)
+    #    partition <- leiden(g)
+    print("Go Leiden now.")
+    ?leiden()
+    #    partition %>% unique()
+    ?leiden()
+    t4 <- system.time(community <- leiden(g,resolution_parameter = rez))
+    #    cat("  Return a community class\n  -Modularity value:", modularity(community),"\n")
+    cat("  -Number of clusters:", length(unique(community)),"\n")
+  }
+  #community_l
+  cat("DONE ~",t4[3],"s\n")
+  
+  message("Run Rphenograph DONE, totally takes ", sum(c(t1[3],t2[3],t3[3],t4[3])), "s.","\n")
+  
+  return(list(g, community))
+}
+
+#------------ nearest neighbor reuslt tapping ANN library ------------------------------
+
+#' K Nearest Neighbour Search
+#'
+#' Uses a kd-tree to find the p number of near neighbours for each point in an input/output dataset.
+#' 
+#' Use the nn2 function from the RANN package, utilizes the Approximate Near Neighbor (ANN) C++ library, 
+#' which can give the exact near neighbours or (as the name suggests) approximate near neighbours 
+#' to within a specified error bound. For more information on the ANN library please 
+#' visit http://www.cs.umd.edu/~mount/ANN/.
+#' 
+#' @param data matrix; input data matrix
+#' @param k integer; number of nearest neighbours
+#' 
+#' @return a n-by-k matrix of neighbor indices
+#' 
+#' @examples
+#' iris_unique <- unique(iris) # Remove duplicates
+#' data <- as.matrix(iris_unique[,1:4])
+#' neighbors <- find_neighbors(data, k=10)
+#' 
+#' @importFrom RANN nn2
+#' @export
+#' 
+
+
+
+find_neighbors <- function(data, k,p){
+  if (p == "2") {
+    nearest <- RANN::nn2(data, data, k, searchtype = "standard")
+  } else {
+    nearest <- RANN.L1::nn2(data, data, k, searchtype = "standard")
+  }
+  
+  return(nearest[[1]])
+}
+
+
+
+
+
+# ------ 
+
+
+
+#df_bound_look_close_sub
+
+
+rez_here = 1.2
+#k_here_zoom == 40
+
+# Run a local phenograph clustering, globally ------
+
+params_now_tc <- params_now[!str_detect(params_now,"EGFRt")]
+
+
+
+Rphenograph_out <- Rphenograph_local(df_bound_look_close_sub[,c(params_now_tc)],
+                                     k = k_here_zoom,rez = rez_here,
+                                     method_here = "Leiden",
+                                     p_of_lp_norm)
+
+
+
+
+
+rez_here_label <- str_replace(rez_here,"\\.","p")
+
+
+
+#
+
+Rpmat <- as.data.frame(Rphenograph_out[[2]])
+Rpmat %>% dim()
+colnames(Rpmat) <- "recluster"
+colnames(Rpmat)
+colnames(df_bound_look_close_sub)
+df_bound_look_close_sub$recluster <- NULL
+
+#df_bound_look_close_sub$recluster %>% unique()
+
+df_bound_look_close_sub <- cbind.data.frame(df_bound_look_close_sub,Rpmat)
+
+
+```
+
+
+
+
+   
+#-------- UMAPs -----------
+   
+``` {r , echo=FALSE}
+
+
+# --------------- local umap --------
+
+
+#k_here
+
+umap_mat <- umap(df_bound_look_close_sub[,c(params_now_tc)],k_here, verbose = TRUE) %>% as.data.frame()
+
+
+
+colnames(umap_mat) %>% print()
+
+colnames(umap_mat) <- c('re_UMAP1','re_UMAP2')
+
+df_bound_look_close_og <- df_bound_look_close
+df_bound_look_close <- df_bound_look_close_sub
+
+cols <- 
+  colnames(df_bound_look_close)
+
+df_bound_look_close <- df_bound_look_close %>% dplyr::select(all_of(c(cols[!str_detect(cols,"UMAP")])))
+
+df_bound_look_close <- cbind.data.frame(df_bound_look_close,umap_mat)
+
+#df_bound_look_close$UMAP1 <- NULL
+#df_bound_look_close$UMAP2 <- NULL
+
+
+df_bound_look_close %>% dplyr::select(all_of(c(cols[!str_detect(cols,"UMAP")]))) %>% colnames()
+
+
+#df_bound_look_close %>% summary()
+
+df_bound_look_close$run %>% unique()
+
+df_bound_look_close$cluster <- df_bound_look_close$recluster
+
+
+
+```
+
+
+
+
+   
+#-------- new cluster medians  -----------
+   
+``` {r , echo=FALSE}
+
+
+new_get_cluster_medians_g_no_b_zoom <- function(df_bound_here, params_here) {
+  df_bound_here$cluster <- NULL
+  df_bound_here$cluster <- df_bound_here$recluster %>% as.character()
+  sorted_clusters <- df_bound_here$cluster %>% unique() %>% sort() %>% as.character()
+  print("the clusters:")
+  print(sorted_clusters)
+  
+  cluster_medians_bound <- NULL
+  
+  for (cluster_i in c(sorted_clusters)) {
+    #    cluster_i <- sorted_clusters[1]
+    #    print(cluster_i)
+    df_umap <- df_bound_here %>% 
+      dplyr::filter(cluster == cluster_i) %>% as.data.frame() %>% 
+      dplyr::select("re_UMAP1","re_UMAP2")
+    #df_umap %>% head() %>% print()
+    #      dim(df_umap[1])
+    if (!(dim(df_umap)[1] == 0)) {
+      clust_UMAP <- df_umap[,1:2] %>% as.matrix() %>% colMedians()
+      re_UMAP1 <- clust_UMAP[1]
+      re_UMAP2 <- clust_UMAP[2]
+      
+      
+      #      print
+      df_tester <- df_bound_here %>% dplyr::filter(cluster == cluster_i) %>% 
+        as.data.frame() %>% dplyr::select(all_of(c(params_here)))
+      # DO z-scores
+      c_names <- colnames(df_tester)
+      #print(c_names)
+      
+      cluster_medians <- df_tester[,c(params_here)]  %>% as.matrix() %>% colMedians()
+      #      cluster_medians <- df_tester %>% as.matrix() %>% colMedians()
+      cluster_medians <- cluster_medians %>% t() %>% as.data.frame() 
+      
+      colnames(cluster_medians) <- params_here
+      #      cluster_medians %>% view()
+      
+      cluster_medians$cluster_i <- cluster_i
+      
+      cluster_medians <- cbind(cluster_medians,re_UMAP1,re_UMAP2)
+      cluster_medians_bound <- rbind.data.frame(cluster_medians_bound,cluster_medians)
+    }
+  }
+  #  cluster_medians_bound %>% summary() %>% print()
+  return(cluster_medians_bound)
+}
+
+
+#recluster
+
+
+new_recluster_medians <- new_get_cluster_medians_g_no_b_zoom(df_bound_look_close,params_now)
+
+#new_recluster_medians %>% view()
+
+new_recluster_medians$recluster <- new_recluster_medians$cluster_i
+
+new_recluster_medians$recluster <- new_recluster_medians$recluster %>% as.integer()
+
+df_bound_look_close$window <- df_bound_look_close$batch
+df_bound_look_close$batch <- df_bound_look_close$sub_batch
+df_bound_look_close$true_batch <- df_bound_look_close$run
+
+
+df_bound_look_close <- df_bound_look_close %>% group_by(batch,PTID) %>% add_count(name = "batch_PTID_count")
+
+df_bound_look_close <- df_bound_look_close %>% group_by(batch,PTID,recluster) %>% add_count(name = "batch_PTID_cluster_count")
+
+df_bound_look_close <- df_bound_look_close %>% mutate(batch_PTID_cluster_freq = batch_PTID_cluster_count/batch_PTID_count)
+
+df_bound_look_close <- df_bound_look_close %>% group_by(batch) %>% add_count(name = "batch_total")
+
+df_bound_look_close <- df_bound_look_close %>% group_by(batch,recluster) %>% add_count(name = "batch_cluster_count")
+
+# cluster frequency per batch
+
+df_bound_look_close <- df_bound_look_close %>% mutate(batch_cluster_freq = batch_cluster_count/batch_total)
+
+
+# computational batches here
+df_bound_look_close$batch %>% unique() %>% print()
+# true cyto batches here
+df_bound_look_close$run %>% unique() %>% print()
+df_bound_look_close$true_batch %>% unique() %>% print()
+# sample type/window here
+df_bound_look_close$window %>% unique() %>% print()
+
+
+df_bound_look_close <- df_bound_look_close %>% group_by(window) %>% add_count(name = "window_total")
+
+df_bound_look_close <- df_bound_look_close %>% group_by(window,recluster) %>% add_count(name = "window_cluster_count")
+
+# what fraction of the cells from each time-point end up in each cluster 
+df_bound_look_close <- 
+  df_bound_look_close %>% mutate(window_cluster_freq = window_cluster_count/window_total)
+
+
+
+df_bound_look_close$recluster <- df_bound_look_close$recluster %>% as.character()
+new_recluster_medians$recluster <- new_recluster_medians$recluster %>% as.character()
+
+
+
+add_rc_freq <- function(metacluster_medians_bound_here,df_full) {
+  
+  mclust_count <- dim(df_full)[1]
+  mclust_freq <- df_full %>% dplyr::filter(!str_detect(file,"CTRL")) %>%
+    group_by(recluster) %>% 
+    summarise(mclust_sum = n()) %>%
+    mutate(freq = mclust_sum/mclust_count)
+  mclust_freq$mclust_sum <- NULL
+  #metacluster_medians_bound_here$cluster_i %>% class()
+  #mclust_freq$cluster_i <- mclust_freq$recluster
+  #  mclust_freq$Meta_Phenograph_Leiden <- NULL
+  print(summary(mclust_freq))
+  mclust_freq$recluster <- mclust_freq$recluster %>% as.character()
+  metacluster_medians_bound_here <- right_join(metacluster_medians_bound_here,mclust_freq,by = "recluster")
+  return(metacluster_medians_bound_here)
+}
+
+
+
+new_recluster_medians_plus <- add_rc_freq(new_recluster_medians,df_bound_look_close)
+
+df_bound_look_close$recluster <- df_bound_look_close$recluster %>% as.integer()
+new_recluster_medians$recluster <- new_recluster_medians$recluster %>% as.integer()
+
+
+
+window_info <- df_bound_look_close %>% 
+  dplyr::select(all_of(c("recluster","window","window_cluster_freq"))) %>% distinct()
+
+
+window_info <- window_info %>% group_by(recluster) %>% 
+  mutate(wcf_sum = sum(window_cluster_freq)) %>% 
+  mutate(wcf_sum_frac = window_cluster_freq/wcf_sum) %>% 
+  mutate(max_wcf_sum_frac = max(wcf_sum_frac)) %>% 
+  mutate(primary_window = case_when(wcf_sum_frac == max_wcf_sum_frac ~ window,
+                                    TRUE ~ "") )
+
+
+
+
+
+window_info_labels <- window_info %>% 
+  dplyr::select(all_of(c("recluster","primary_window"))) %>% dplyr::filter(primary_window != "") %>% 
+  distinct()
+
+window_info_labels$recluster <- window_info_labels$recluster %>% as.character()
+
+new_recluster_medians_plus <- right_join(window_info_labels,new_recluster_medians_plus)
+
+windows <- c("PRE","IP","PEAK")
+
+new_recluster_medians_plus <- transform(new_recluster_medians_plus, primary_window = 
+                                               factor(primary_window,
+                                                      levels = c(windows)))  
+
+
+# order tings by TCF1 !!!
+
+new_recluster_medians_plus <- new_recluster_medians_plus %>% group_by(primary_window) %>% 
+  dplyr::arrange(desc(TCF1),.by_group = TRUE) 
+
+
+new_recluster_medians_plus$recluster_ordered <- rownames(new_recluster_medians_plus)
+#new_recluster_medians_plus <- new_recluster_medians_plus %>% mutate(recluster_ordered = rownames(.))
+#new_recluster_medians_plus %>% view()
+
+#new_recluster_medians_plus %>% dplyr::filter(freq < 0.01) %>% select(recluster_ordered) %>% t() %>% as.vector()
+
+new_recluster_medians_plus <- new_recluster_medians_plus %>% as.data.frame()
+
+tiny_clusters <- new_recluster_medians_plus %>% dplyr::filter(freq < 0.01) %>% as.data.frame() %>% select(recluster_ordered) %>% t() %>% as.vector()
+
+new_recluster_medians_plus$recluster %>% unique()
+new_recluster_medians_plus$recluster_ordered %>% unique()
+tiny_clusters
+
+
+
+reorder_recluster_info <- new_recluster_medians_plus %>% as.data.frame() %>% dplyr::select(c("recluster","recluster_ordered"))
+
+
+reorder_recluster_info$recluster <- reorder_recluster_info$recluster %>% as.integer()
+df_bound_look_close$recluster <- df_bound_look_close$recluster %>% as.integer()
+df_bound_look_close$recluster_ordered <- NULL
+df_bound_look_close <- right_join(reorder_recluster_info,df_bound_look_close)
+
+new_recluster_medians_plus$recluster <- new_recluster_medians_plus$recluster %>% as.integer()
+
+
+new_recluster_medians_plus <- right_join(reorder_recluster_info,new_recluster_medians_plus)
+
+max_here <- new_recluster_medians_plus$recluster_ordered %>% unique() %>% length()
+
+min_here <- 1
+
+max_here
+
+#breaks
+
+breaks = c(min_here:max_here)
+palette=c("blue","green","yellow","orange","darkred")
+my_palette <- colorRampPalette(palette)(n=length(breaks))
+
+
+my_palette_shuffled <- my_palette     
+
+
+plot_path_now_details 
+getwd()
+
+list.dirs((".."))
+
+option_here <- "all" 
+
+plot_path_now_zoom <- paste0(plot_path_now_details,"/deeper_",option_here,"__",k_here_zoom,"_",rez_here_label)
+
+suppressWarnings(dir.create(plot_path_now_zoom))
+
+
+plotpath_now_zoom_dat <- paste0(plot_path_now_zoom,"/csv_out")
+suppressWarnings(dir.create(plotpath_now_zoom_dat))
+
+#df_bound_look_close %>% dim()
+#df_bound_look_close$df_bound_look_close_sub <- NULL
+df_bound_look_close %>% write_csv(paste0(plotpath_now_zoom_dat,"/df_bound_look_close_",option_here,".csv"))
+
+
+
+```
+
+
+
+
+   
+#--------   -----------
+   
+``` {r , echo=FALSE}
+
+
+
+
+
+df_bound_look_close <- df_bound_look_close %>% mutate(file_type = case_when(str_detect(file,"^HIGH") ~ "HIGH",
+                                                          str_detect(file,"^LOW") ~ "LOW",
+                                                          str_detect(file,"^MED") ~ "MED",
+                                                          str_detect(file,"^CLL") ~ "CLL",
+                                                          TRUE ~ "CTRL"))
+
+
+new_recluster_medians_plus$recluster_ordered  <-   new_recluster_medians_plus$recluster_ordered  %>% as.integer()
+
+new_recluster_medians_plus <- new_recluster_medians_plus %>% dplyr::arrange(recluster_ordered) %>% 
+  mutate(recluster_ordered_w_freq = paste0(recluster_ordered," (",round(100*freq,2),"%)"))
+
+cluster_levels <- 
+  new_recluster_medians_plus$recluster_ordered %>% as.numeric() %>% unique() %>% sort() %>% as.character()
+
+#  print("made it here")
+cluster_levels_w_freq <- 
+  new_recluster_medians_plus$recluster_ordered_w_freq %>% unique() #%>% sort() %>% as.character()
+cluster_levels_w_freq
+
+
+
+new_recluster_medians_plus$recluster_ordered <- new_recluster_medians_plus$recluster_ordered %>% as.integer()
+
+cluster_info_to_join <-  new_recluster_medians_plus %>% as.data.frame() %>% dplyr::select(all_of(c("recluster_ordered","freq","recluster_ordered_w_freq")))
+df_bound_look_close$recluster_ordered  <-   df_bound_look_close$recluster_ordered  %>% as.integer()
+
+df_bound_look_close <- right_join(df_bound_look_close,cluster_info_to_join)
+
+
+
+df_bound_look_close <- transform(df_bound_look_close, recluster_ordered_w_freq = 
+                                 factor(recluster_ordered_w_freq,
+                                        levels = c(cluster_levels_w_freq)))
+cluster_levels
+
+df_bound_look_close <- transform(df_bound_look_close, recluster_ordered = 
+                                   factor(recluster_ordered,
+                                          levels = c(cluster_levels)))
+
+
+
+#new_recluster_medians_plus <- new_recluster_medians_plus %>% dplyr::filter(!(primary_window == ""))
+df_bound_look_close$recluster_ordered %>% unique()
+
+#df_bound_look_close$file
+
+#df_bound_look_close %>% 
+
+#new_recluster_medians_plus %>% view()
+new_recluster_medians_plus %>% colnames()
+reorder_recluster_info$recluster <-  reorder_recluster_info$recluster %>% as.character()
+
+window_info_labels <- right_join(reorder_recluster_info,window_info_labels) #%>% view()
+
+window_info_labels$recluster_ordered <- window_info_labels$recluster_ordered %>% as.integer()
+
+window_info_labels$recluster <- window_info_labels$recluster %>% as.integer()
+new_recluster_medians_plus <- right_join(window_info_labels,new_recluster_medians_plus)
+
+df_bound_look_close$window %>% unique()
+
+  window_levels_here <- c("PRE","IP","PEAK") 
+df_bound_look_close <- transform(df_bound_look_close, window = 
+                                   factor(window,
+                                          levels = c(window_levels_here)))
+
+
+
+new_recluster_medians_plus$window <- new_recluster_medians_plus$primary_window
+
+new_recluster_medians_plus <- transform(new_recluster_medians_plus, window = 
+                                   factor(window,
+                                          levels = c(window_levels_here)))
+
+
+#
+
+df_bound_look_close <- transform(df_bound_look_close, batch = 
+                                   factor(batch,
+                                          levels = c(batches)))
+
+
+new_recluster_medians_plus <- new_recluster_medians_plus %>% dplyr::arrange(desc(TCF1))
+
+new_recluster_medians_plus$palette_ordered <- rownames(new_recluster_medians_plus)
+
+
+palette_order_info <- new_recluster_medians_plus %>% as.data.frame() %>% 
+  dplyr::select(all_of(c("recluster_ordered","palette_ordered")))
+
+df_bound_look_close$recluster_ordered <- df_bound_look_close$recluster_ordered %>% as.integer()
+
+df_bound_look_close <- right_join(palette_order_info,df_bound_look_close)
+
+
+max_here <- new_recluster_medians_plus$palette_ordered %>% unique() %>% length()
+
+min_here <- 1
+
+
+breaks = c(min_here:max_here)
+palette=c("blue","green","yellow","orange","darkred")
+my_palette <- colorRampPalette(palette)(n=length(breaks))
+
+      palette_order_info <- palette_order_info %>% dplyr::arrange(recluster_ordered)
+      palette_reordering <- palette_order_info$palette_ordered
+      palette_reordering <- palette_reordering %>% as.integer()
+      my_palette_shuffled <- my_palette     
+      my_palette_shuffled <- my_palette[palette_reordering]
+      
+      
+#. themes and a function ---- 
+      
+      
+      
+pretty_theme_umap <- theme(text = element_text(family='Arial'),
+                      panel.background = element_rect(fill = "white",color="black",
+                                                      size = 1),
+              #        panel.background = element_blank(),
+                      panel.grid.major = element_blank(),
+                      panel.grid.minor = element_blank(),
+                      plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                      plot.title = element_text(family='Arial',color="black", size=14, face="bold",margin=margin(1,1,4,0)),
+                      plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                      axis.title.x = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(4,0,0,0)),
+                      axis.title.y = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(0,4,0,0)),
+                      legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                      legend.text = element_text(family='Arial',color="black", size=11, face="plain"),
+                      axis.text.x = element_blank(),
+                      axis.text.y = element_blank(),
+                      axis.ticks = element_blank(), 
+                      plot.background = element_rect(fill = "white",
+                                                     colour = "white",
+                                                     size = 1),
+                      strip.background = element_rect(fill = "white",colour = "white",
+                                size = 1),
+                      strip.text.x = element_text(family='Arial',color="black", size=14,
+                                                  face="plain",margin=margin(1,0,2,0)),
+                      strip.text.y = element_text(family='Arial',color="black", size=14,
+                                                  face="plain",margin=margin(1,0,2,0)),
+#                      axis.text.y = element_text(family='Arial',color="black", size=10,
+#                                                 face="plain"),
+                      legend.key.width=unit(.8, "cm"),
+                      legend.key.height=unit(0.4, "cm"),
+                      legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                      legend.position="top",
+                      legend.justification="right",
+                      legend.margin=margin(0,0,0,0),
+                      legend.box.margin=margin(1,1,1,1),
+                      legend.background = element_rect(fill = "transparent",
+                                                       colour = "transparent",
+                                                       size = 1)
+                      #                 legend.position = c(1.15, 0.4)
+)
+
+      
+      
+new_pretty_plots_zoom <- function(df_bound_here,
+                                  cluster_medians_bound_here,
+                                  params_oi_here,
+                                  plot_path_here,
+                                  palette_here) {
+  
+  subset_here <- subtype
+  if (subset_here == "T") {
+    subset_here_label <- paste0(option_here," ", T_subtype," ",subset_here," cell")
+  } else {
+    subset_here_label <- paste0(subset_here," cell")    
+  }
+  
+  
+  subset_here_label
+  #  bad_batches <- c("b09","b23","b25")  
+  
+  #  df_bound_here <- df_bound_here %>% 
+  #    dplyr::filter(!(batch %in% bad_batches))
+  
+  #cluster_medians_bound_here <-  cluster_medians_bound_here %>% 
+  #  dplyr::filter(!(batch %in% bad_batches))
+  
+  #cluster_medians_bound_here_g <-  cluster_medians_bound_here_g %>% 
+  #  dplyr::filter(!(batch %in% bad_batches))
+  
+  
+  #  df_bound_here <- df_for_analysis_leiden_rebound
+  #  cluster_medians_bound_here <- total_cluster_medians 
+  #  params_oi_here <- params_now
+  #  plot_path_here <- plot_path_now
+  suppressWarnings(dir.create(plot_path_here))  
+  
+  OG_cluster_meth <- ""
+  
+  #    ggsave()
+  just_heat <- FALSE
+  
+  
+  if (!(just_heat)) {
+    
+    plot_path_here_umap <- paste0(plot_path_here,"/umap")
+    suppressWarnings(dir.create(plot_path_here_umap))
+    
+    if (option_here == "all") {
+      palette_here_batch <- c("grey80","gold","#a88ddd")
+    }  
+    
+    if (option_here == "EGFRt") {
+      palette_here_batch <- c("gold","#a88ddd")
+    }  
+    
+    if (option_here == "PRE") {
+      palette_here_batch <- c("grey80")
+    }
+    
+    palette_here_file_type_ctrl <- c("grey80","#244093","#39b078","#ef9632","#e2282d")
+    palette_here_file_type_no_ctrl <- c("#244093","#39b078","#ef9632","#e2282d")
+    palette_here_file_type_high_med_low <- c("#39b078","#ef9632","#e2282d")
+    
+    #    
+#    df_bound_here$
+    min_sample <- dim(df_bound_here)[1]
+    #df_bound_here_s <- df_bound_here[sample(nrow(df_bound_here),min(min_sample,400000)),]
+
+    
+    do_plot <- !str_detect(option_here,"PRE")
+    #do_plot <- TRUE
+    
+    if (do_plot) {
+      
+      df_bound_here$batch %>% unique()
+      df_bound_here$file_type %>% unique()
+      df_bound_here %>% dplyr::filter(window == "PRE") %>% as.data.frame() %>% dplyr::select(batch) %>% unique()
+      df_bound_here <- df_bound_here %>% mutate(window_spec = case_when((window == "PRE" & file_type == "CLL") ~ "CLL PRE",
+                                                                        TRUE ~ window))
+      
+#    cluster_medians_bound_here$
+    gg_test1 <- ggplot(data = df_bound_here,
+                       aes(x = re_UMAP1, y = re_UMAP2)) + 
+      geom_point(aes(colour = as.factor(window)),
+                 alpha = 0.05,
+                 size = 0.02
+      ) +
+      geom_density_2d(alpha = 0.4,bins = 10,
+                      linewidth = 0.02,
+                      color = "black",
+                      contour_var = "count"
+                      #aes(fill = after_stat(#log(1+
+                      #                           density
+                      #    ))
+      ) + 
+  geom_text(data = cluster_medians_bound_here,
+                    aes(label = recluster_ordered),
+                    colour = "black",
+                    alpha = 1,
+                    size = 4.5
+      ) + xlab("") + ylab("") +
+      #      ggtitle(paste0("Common UMAP display, ",subset_here_label, " clusters")) + 
+      guides(color = "none") +
+  #    guides(color = guide_legend(nrow = 1,  
+  #                                byrow = TRUE,title = "",override.aes = list(size=4,alpha = 0.5))) + 
+      scale_colour_manual(values = c(palette_here_batch),
+                          name=paste0("")#,
+                          #limits = c(-1,5),
+                          # breaks = seq(-1,5), 
+                          #   oob = squish
+      ) + 
+      #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+      #      facet_wrap(.~ batch,
+      #                 #            scales = "free"
+      #                 nrow = 1) +
+      pretty_theme_umap
+    
+    #plot(gg_test1)
+    #
+    testing_n <- paste0("color_by_",option_here)
+    #df_bound_here$month_year %>% unique() %>% sort()
+    
+
+        
+    plot_path_here_umap
+    getwd()  
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,".png"),    #         
+             plot = gg_test1,
+             width = 4.4,        # 5 x 300 pixels
+             height = 4.3,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+      
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,".pdf"),    #         
+             plot = gg_test1,
+             width = 4.4,        # 5 x 300 pixels
+             height = 4.3,
+             dpi = 300,
+             device=cairo_pdf)  
+      
+      
+    
+   
+    
+    
+     
+    gg_test1 <- ggplot(data = df_bound_here,
+                       aes(x = re_UMAP1, y = re_UMAP2)) + 
+      geom_point(aes(colour = as.factor(window)),
+                 alpha = 0.2,
+                 size = 0.05
+      ) +
+      geom_density_2d(alpha = 0.4,bins = 10,
+                      linewidth = 0.025,
+                      color = "black",
+                      contour_var = "count"
+                      #aes(fill = after_stat(#log(1+
+                      #                           density
+                      #    ))
+      ) + geom_text(data = cluster_medians_bound_here,
+                    aes(label = recluster_ordered),
+                    colour = "black",
+                    alpha = 1,
+                    size = 4.5
+      ) + 
+      #      ggtitle(paste0("Common UMAP display, ",subset_here_label, " clusters")) + 
+      #guides(color = "none") +
+      guides(color = guide_legend(nrow = 1,  
+                                  byrow = TRUE,title = "",override.aes = list(size=4,alpha = 0.5))) + xlab("UMAP1") + 
+      ylab("UMAP2") +
+      scale_colour_manual(values = c(palette_here_batch),
+                          name=paste0("")#,
+                          #limits = c(-1,5),
+                          # breaks = seq(-1,5), 
+                          #   oob = squish
+      ) + 
+      #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+            facet_wrap(.~ window,
+                       #            scales = "free"
+                       nrow = 1) +
+      pretty_theme_umap
+    
+    #plot(gg_test1)
+    #
+    testing_n <- paste0("color_by_",option_here)
+    #df_bound_here$month_year %>% unique() %>% sort()
+    
+    
+    
+
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep.png"),    #         
+             plot = gg_test1,
+             width = 8.4,        # 5 x 300 pixels
+             height = 4.2,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep.pdf"),    #         
+             plot = gg_test1,
+             width = 8.4,        # 5 x 300 pixels
+             height = 4.2,
+             dpi = 300,
+             device=cairo_pdf)  
+      
+      
+    
+    
+    
+    df_bound_here$window %>% unique() %>% print()
+    
+    gg_test1 <- ggplot(data = df_bound_here,
+                       aes(x = re_UMAP1, y = re_UMAP2)) + 
+      geom_point(aes(colour = as.factor(window)),
+                 alpha = 0.1,
+                 size = 0.02
+      ) +
+      geom_density_2d(alpha = 0.4,bins = 10,
+                      linewidth = 0.01,
+                      color = "black",
+                      contour_var = "count"
+                      #aes(fill = after_stat(#log(1+
+                      #                           density
+                      #    ))
+      ) + geom_text(data = cluster_medians_bound_here,
+                    aes(label = recluster_ordered),
+                    colour = "black",
+                    alpha = 1,
+                    size = 4
+      ) +
+      #      ggtitle(paste0("Common UMAP display, ",subset_here_label, " clusters")) + 
+      #guides(color = "none") +
+      guides(color = guide_legend(nrow = 1,  
+                                  byrow = TRUE,title = "",override.aes = list(size=4,alpha = 0.5))) + xlab("UMAP1") + ylab("UMAP2") +
+      scale_colour_manual(values = c(palette_here_batch),
+                          name=paste0("")#,
+                          #limits = c(-1,5),
+                          # breaks = seq(-1,5), 
+                          #   oob = squish
+      ) + facet_wrap(.~ as.integer(recluster_ordered),
+                     #            scales = "free"
+                     nrow = 3) +
+      #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+      #      facet_wrap(.~ batch,
+      #                 #            scales = "free"
+      #                 nrow = 1) +
+      pretty_theme_umap
+    
+    #plot(gg_test1)
+    #
+    testing_n <- paste0("color_by_",option_here,"_split")
+    #df_bound_here$month_year %>% unique() %>% sort()
+    
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,".png"),    #         
+             plot = gg_test1,
+             width =10.4,        # 5 x 300 pixels
+             height = 6.2,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+    }
+    
+    
+    
+    
+
+    cluster_levels    
+    
+    do_plot <- TRUE
+    
+    if (do_plot) {
+      
+      
+      #cluster_medians_bound_here_g_no_b %>% head()
+#          df_bound_here$
+      #df_bound_here %>% head()
+      
+#      palette_here
+#      palette_order_info <- palette_order_info %>% dplyr::arrange(recluster_ordered)
+#      palette_order_info
+      
+      
+      gg_test1 <- ggplot(data = df_bound_here,
+                         aes(x = re_UMAP1, y = re_UMAP2)) + 
+        geom_point(aes(colour = as.factor(recluster_ordered)),
+                   alpha = 0.02,
+                   size = 0.03
+        ) +
+        geom_density_2d(alpha = 0.4,bins = 10,
+                        linewidth = 0.1,
+                        color = "black",
+                        contour_var = "count"
+                        #aes(fill = after_stat(#log(1+
+                        #                           density
+                        #    ))
+        ) + geom_text(data = cluster_medians_bound_here,
+                      aes(label = recluster_ordered),
+                      colour = "black",
+                      alpha = 1,
+                      size = 5
+        ) + xlab("") + ylab("") +
+        #      ggtitle(paste0("Common UMAP display of ",subset_here_label, " clusters by batch")) + 
+        guides(color = "none") +
+        #      guides(color = guide_legend(nrow = 2,  
+        #                                  byrow = TRUE,title = "",override.aes = list(size=4))) + 
+        #xlab("UMAP1") + ylab("UMAP2") +
+        scale_colour_manual(values = c(palette_here),
+                            name=paste0("")#,
+                            #limits = c(-1,5),
+                            # breaks = seq(-1,5), 
+                            #   oob = squish
+        ) + 
+        #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+        #      facet_wrap(.~ batch,
+        #                 #            scales = "free"
+        #                 nrow = 1) +
+        pretty_theme_umap
+      
+      #plot(gg_test1)
+      #
+      testing_n <- paste0("color_by_cluster_no_ctrl")
+      #df_bound_here$month_year %>% unique() %>% sort()
+      plot_path_here_umap
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,".png"),    #         
+             plot = gg_test1,
+             width = 4.4,        # 5 x 300 pixels
+             height = 4.3,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,".pdf"),    #         
+             plot = gg_test1,
+             width = 4.4,        # 5 x 300 pixels
+             height = 4.3,
+             units = "in",
+             dpi = 300,
+             device=cairo_pdf)  
+      
+    
+      
+      gg_test1 <- ggplot(data = df_bound_here,
+                         aes(x = re_UMAP1, y = re_UMAP2)) + 
+        geom_point(aes(colour = as.factor(recluster_ordered)),
+                   alpha = 0.02,
+                   size = 0.03
+        ) +
+        geom_density_2d(alpha = 0.4,bins = 10,
+                        linewidth = 0.1,
+                        color = "black",
+                        contour_var = "count"
+                        #aes(fill = after_stat(#log(1+
+                        #                           density
+                        #    ))
+        ) + geom_text(data = cluster_medians_bound_here,
+                      aes(label = recluster_ordered),
+                      colour = "black",
+                      alpha = 1,
+                      size = 4.5
+        ) + xlab("") + ylab("") +
+        #      ggtitle(paste0("Common UMAP display of ",subset_here_label, " clusters by batch")) + 
+        guides(color = "none") +
+        #      guides(color = guide_legend(nrow = 2,  
+        #                                  byrow = TRUE,title = "",override.aes = list(size=4))) + 
+        #xlab("UMAP1") + ylab("UMAP2") +
+        scale_colour_manual(values = c(palette_here),
+                            name=paste0("")#,
+                            #limits = c(-1,5),
+                            # breaks = seq(-1,5), 
+                            #   oob = squish
+        ) + 
+        facet_wrap(.~ window,
+                   #            scales = "free"
+                   nrow = 1) +
+        #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+        #      facet_wrap(.~ batch,
+        #                 #            scales = "free"
+        #                 nrow = 1) +
+        pretty_theme_umap
+      
+      #plot(gg_test1)
+      #
+      testing_n <- paste0("color_by_cluster_no_ctrl")
+      #df_bound_here$month_year %>% unique() %>% sort()
+      plot_path_here_umap
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep.png"),    #         
+             plot = gg_test1,
+             width = 8.4,        # 5 x 300 pixels
+             height = 3.4,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep.pdf"),    #         
+             plot = gg_test1,
+             width = 8.4,        # 5 x 300 pixels
+             height = 3.4,
+             units = "in",
+             dpi = 300,
+             device=cairo_pdf)  
+      
+
+      window_spec_levels <-  df_bound_here$window_spec %>% unique()
+      
+       
+      
+      df_bound_here <- transform(df_bound_here,
+                                 window_spec=factor(window_spec,
+                                                       levels=c(window_spec_levels)))
+      
+      
+      gg_test1 <- ggplot(data = df_bound_here,
+                         aes(x = re_UMAP1, y = re_UMAP2)) + 
+        geom_point(aes(colour = as.factor(recluster_ordered)),
+                   alpha = 0.02,
+                   size = 0.03
+        ) +
+        geom_density_2d(alpha = 0.4,bins = 10,
+                        linewidth = 0.1,
+                        color = "black",
+                        contour_var = "count"
+                        #aes(fill = after_stat(#log(1+
+                        #                           density
+                        #    ))
+        ) + geom_text(data = cluster_medians_bound_here,
+                      aes(label = recluster_ordered),
+                      colour = "black",
+                      alpha = 1,
+                      size = 4.5
+        ) + xlab("") + ylab("") +
+        #      ggtitle(paste0("Common UMAP display of ",subset_here_label, " clusters by batch")) + 
+        guides(color = "none") +
+        #      guides(color = guide_legend(nrow = 2,  
+        #                                  byrow = TRUE,title = "",override.aes = list(size=4))) + 
+        #xlab("UMAP1") + ylab("UMAP2") +
+        scale_colour_manual(values = c(palette_here),
+                            name=paste0("")#,
+                            #limits = c(-1,5),
+                            # breaks = seq(-1,5), 
+                            #   oob = squish
+        ) + 
+        facet_wrap(.~ window_spec,
+                   #            scales = "free"
+                   nrow = 1) +
+        #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+        #      facet_wrap(.~ batch,
+        #                 #            scales = "free"
+        #                 nrow = 1) +
+        pretty_theme_umap
+      
+      #plot(gg_test1)
+      #
+      testing_n <- paste0("color_by_cluster_no_ctrl_spec")
+      #df_bound_here$month_year %>% unique() %>% sort()
+      plot_path_here_umap
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep.png"),    #         
+             plot = gg_test1,
+             width = 10.4,        # 5 x 300 pixels
+             height = 3.4,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep.pdf"),    #         
+             plot = gg_test1,
+             width = 10.4,        # 5 x 300 pixels
+             height = 3.4,
+             units = "in",
+             dpi = 300,
+             device=cairo_pdf)  
+      
+      cluster_medians_bound_here_PRE <- cluster_medians_bound_here %>% dplyr::filter(window == "PRE")
+      
+      df_bound_here_PRE <- df_bound_here %>% dplyr::filter(window == "PRE")
+      gg_test1 <- ggplot(data = df_bound_here_PRE,
+                         aes(x = re_UMAP1, y = re_UMAP2)) + 
+        geom_point(aes(colour = as.factor(recluster_ordered)),
+                   alpha = 0.4,
+                   size = 0.1
+        ) +
+        geom_density_2d(alpha = 0.4,bins = 10,
+                        linewidth = 0.1,
+                        color = "black",
+                        contour_var = "count"
+                        #aes(fill = after_stat(#log(1+
+                        #                           density
+                        #    ))
+        ) + geom_text(data = cluster_medians_bound_here_PRE,
+                      aes(label = recluster_ordered),
+                      colour = "black",
+                      alpha = 1,
+                      size = 4.5
+        ) + xlab("") + ylab("") +
+        #      ggtitle(paste0("Common UMAP display of ",subset_here_label, " clusters by batch")) + 
+        guides(color = "none") +
+        #      guides(color = guide_legend(nrow = 2,  
+        #                                  byrow = TRUE,title = "",override.aes = list(size=4))) + 
+        #xlab("UMAP1") + ylab("UMAP2") +
+        scale_colour_manual(values = c(palette_here),
+                            name=paste0("")#,
+                            #limits = c(-1,5),
+                            # breaks = seq(-1,5), 
+                            #   oob = squish
+        ) + 
+        facet_wrap(.~ file_type + file,
+                   #            scales = "free"
+                   nrow = 3) +
+        #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+        #      facet_wrap(.~ batch,
+        #                 #            scales = "free"
+        #                 nrow = 1) +
+        pretty_theme_umap
+      
+      #plot(gg_test1)
+      #
+      testing_n <- paste0("color_by_cluster_no_ctrl_spec")
+      #df_bound_here$month_year %>% unique() %>% sort()
+      plot_path_here_umap
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep_wtf.png"),    #         
+             plot = gg_test1,
+             width = 18.4,        # 5 x 300 pixels
+             height = 10.4,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,"_sep_wtf.pdf"),    #         
+             plot = gg_test1,
+             width = 18.4,        # 5 x 300 pixels
+             height = 10.4,
+             units = "in",
+             dpi = 300,
+             device=cairo_pdf)  
+      
+      
+      
+      
+      }
+    
+    
+  }
+    
+    
+    
+    do_plot <- TRUE
+    
+    if (do_plot) {
+      
+      df_bound_here$file_type %>% unique()
+      
+      gg_test1 <- ggplot(data = df_bound_here,
+                         aes(x = re_UMAP1, y = re_UMAP2)) + 
+        geom_point(aes(colour = as.factor(file_type)),
+                   alpha = 0.05,
+                   size = 0.03
+        ) +
+        geom_density_2d(alpha = 0.7,bins = 20,
+                        linewidth = 0.1,
+                        color = "black",
+                        contour_var = "count"
+                        #aes(fill = after_stat(#log(1+
+                        #                           density
+                        #    ))
+        ) + geom_text(data = cluster_medians_bound_here,
+                      aes(label = recluster_ordered),
+                      colour = "black",
+                      alpha = 1,
+                      size = 4
+        ) +
+        #      ggtitle(paste0("Common UMAP display of ",subset_here_label, " clusters by batch")) + 
+        #guides(color = "none") +
+        guides(color = guide_legend(nrow = 1,  
+                                    byrow = TRUE,title = "",override.aes = list(size=4,alpha = 0.4))) + xlab("UMAP1") + ylab("UMAP2") +
+        scale_colour_manual(values = c(palette_here_file_type_no_ctrl),
+                            name=paste0("")#,
+                            #limits = c(-1,5),
+                            # breaks = seq(-1,5), 
+                            #   oob = squish
+        ) + 
+        #guides(color = guide_legend(nrow = 1, byrow = TRUE,title = paste0("metacluster"),title.position = "top")) +
+        facet_grid(batch ~ file_type#,
+                   #            scales = "free"
+                   #nrow = 1
+        ) +
+        pretty_theme_umap
+      
+      #plot(gg_test1)
+      #
+      testing_n <- paste0("color_by_response_no_ctrl_split")
+      #df_bound_here$month_year %>% unique() %>% sort()
+      plot_path_here
+      
+      ggsave(paste0(plot_path_here_umap,"/",testing_n,".png"),    #         
+             plot = gg_test1,
+             width = 8,        # 5 x 300 pixels
+             height = 8.5,
+             units = "in",
+             dpi = 300,
+             device=png)  
+      
+    }
+    
+    
+  
+   
+  
+  
+   
+    
+    
+### ------------heat plot of cluster median parameter values---------
+    
+    
+    
+    cluster_medians_bound_here %>% colnames()
+    
+  #cluster_medians_bound_here %>% view()
+    
+    df_to_plot <- cluster_medians_bound_here %>% as.data.frame() %>% dplyr::select(-all_of(c("re_UMAP1","re_UMAP2"))) %>% 
+      pivot_longer(cols = all_of(c(params_oi_here)),names_to = "parameter",values_to = "value")
+    #  colnames(df_to_plot[,c(params_oi_here)]) %>% toupper()
+    
+    #  colnames(df_to_plot[,c(params_oi_here)]) <-  colnames(df_to_plot[,c(params_oi_here)]) %>% toupper()
+    #  params_oi_here_heat <- params_oi_here %>% toupper()
+    
+    
+    
+    print("made it here")
+    
+    cluster_levels <- df_to_plot$recluster_ordered %>% unique()
+    cluster_levels
+    
+    df_to_plot <- df_to_plot %>% mutate(recluster_ordered_w_freq = paste0(recluster_ordered," (",round(100*freq,2),")"))
+    
+    cluster_levels_w_freq <- df_to_plot$recluster_ordered_w_freq %>% unique()
+    cluster_levels_w_freq
+    cluster_levels
+    
+    df_to_plot$recluster_ordered <- df_to_plot$recluster_ordered %>% as.integer()
+    #window_info_labels
+    
+    #window_info_labels$recluster_ordered <- window_info_labels$recluster_ordered %>% as.integer()
+    
+#    df_to_plot <- right_join(window_info_labels,df_to_plot)
+    
+    
+    df_to_plot <- transform(df_to_plot,
+                            recluster_ordered=factor(recluster_ordered,
+                                             levels=c(cluster_levels)))
+
+    #cluster_levels
+    #    df_to_plot %>% head()
+    df_to_plot <- transform(df_to_plot,
+                            recluster_ordered_w_freq=factor(recluster_ordered_w_freq,
+                                                    levels=c(cluster_levels_w_freq)))
+    
+    
+    window_levels_here_now <- c("PEAK","IP","PRE") 
+    
+    df_to_plot$primary_window <- df_to_plot$primary_window %>% as.character()
+    
+    df_to_plot <- transform(df_to_plot,
+                            primary_window = factor(primary_window,
+                                                            levels=c(window_levels_here_now)))
+    
+    
+    df_to_plot <- transform(df_to_plot,
+                            parameter = factor(parameter,
+                                               levels=c(params_oi_here)))
+    
+    
+    max_here <- df_to_plot$value %>% max()
+    min_here <- df_to_plot$value %>% min()
+    
+    left_lim <- 0
+    right_lim <- 3
+    
+    breaks = seq(left_lim,right_lim,by=0.05)
+    
+    #palette=c("blue","lightblue","green","yellow","orange","orangered","darkred")
+    palette=c("blue","lightblue","yellow","darkorange","darkred")
+    
+    my_palette_intensities <- colorRampPalette(palette)(n=length(breaks)-1)
+    
+    
+    do_glass_half_full_scaling <- FALSE
+    
+    lim_here <- case_when(do_glass_half_full_scaling ~ 2,
+                          TRUE ~ 5)
+    
+    lab_here <- case_when(!do_glass_half_full_scaling ~ paste0("arcsinh-transformed value"),
+                          TRUE ~ paste0("scaled arcsinh-transformed value"))
+    
+    
+    
+    title_here <- paste0(option_here," clusters")
+    library(scales)
+    
+    
+    
+pretty_theme_tile_final <- theme(text = element_text(family='Arial'),
+                           panel.background = element_rect(fill = "white",color="black"),
+                           panel.grid.major = element_line(),
+                           panel.grid.minor = element_line(),
+                           plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                           plot.title = element_text(family='Arial',color="black", size=14, face="bold",margin=margin(1,1,4,0)),
+                           plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                           axis.title.x = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(4,0,0,0)),
+                           axis.title.y = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(0,4,0,0)),
+                           legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                           legend.text = element_text(family='Arial',color="black", size=12, face="plain"),
+                           axis.text.x = element_text(family='Arial',color="black", size=14, face="plain",angle = 30,
+                                                      vjust = 1, hjust=1,margin=margin(0,0,0,0)),
+                           axis.ticks = element_line(),
+                           plot.background = element_rect(
+                             fill = "white",
+                             colour = "white",
+                             size = 1),
+                           strip.background = element_rect(
+                             fill = "white",
+                             colour = "white",
+                             size = 1),
+                           strip.text.x = element_text(family='Arial',color="black", size=13,
+                                                       face="plain",margin=margin(1,0,2,0)),
+                           strip.text.y = element_text(family='Arial',color="black", size=14,
+                                                       face="plain",margin=margin(1,0,2,0)),
+                           axis.text.y = element_text(family='Arial',color="black", size=14,
+                                                      face="plain"),
+                           legend.key.width=unit(.8, "cm"),
+                           legend.key.height=unit(0.4, "cm"),
+                           legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                           legend.position="top",
+                           legend.justification="right",
+                           legend.margin=margin(0,0,0,0),
+                           legend.box.margin=margin(1,1,1,1),
+                           legend.background = element_rect(fill = "transparent",
+                                                            colour = "transparent",
+                                                            size = 1)
+                           #                 legend.position = c(1.15, 0.4)
+)
+
+
+    
+    
+    gg_test1 <- ggplot(df_to_plot) + 
+      geom_tile(data = df_to_plot,
+                aes(x = as.factor(parameter),y = as.factor(recluster_ordered),
+                    fill = as.numeric(value)),
+                alpha = 0.9) +
+      #    gg_box <- ggplot(df_to_boxplot) + 
+      #        geom_violin(aes(x = Parameter,y=Values,color = refined_cluster)) + 
+      #        geom_jitter(aes(x = Parameter,y=Values,color = refined_cluster),size = 0.2,width = 0.1,height = 0) + 
+    #  ggtitle(paste0(title_here)) + 
+      guides(fill = guide_colorbar(title = lab_here,
+                                   title.position = "top")
+             #         size = guide_legend(title = "Metacluster share of all Spike and non-Spike\n IFNg+ or IL2+ ",subtype," (%)",
+             #                             title.position = "top")
+      ) +  pretty_theme_tile_final + facet_grid(primary_window ~., space = "free",scales = "free",drop = TRUE) +
+      scale_fill_gradientn(colors = my_palette_intensities,
+                           name=lab_here,
+                           limits = c(left_lim,right_lim),
+                           breaks = seq(0,lim_here), oob = squish
+                           ) +
+      #scale_fill_gradientn(colours = my_palette_intensities ) +
+      #  ggtitle(#paste0("Metacluster characteristics and coherence")
+      #          ) +
+      xlab("Parameters") + ylab("Cluster")
+    #facet_wrap(stimulation~.) 
+    
+    
+    
+    plot_path_here_heat <- paste0(plot_path_here,"/heat")
+    suppressWarnings(dir.create(plot_path_here_heat))
+    
+    
+    #plot(gg_test1)
+    #
+    testing_n <- paste0("cluster_medians_pw")
+    
+    if (FALSE)       {
+      ggsave(paste0(plot_path_here_heat,"/",OG_cluster_meth,"_",testing_n,".png"),    #         
+           plot = gg_test1,
+           width = 8,        # 5 x 300 pixels
+           height = case_when(str_detect(option_here,"all") ~ 6,
+                              TRUE ~ 5.5),
+           dpi = 300,
+           units = "in",
+           device=png)   
+    }
+    
+    
+    ggsave(paste0(plot_path_here_heat,"/",OG_cluster_meth,"_",testing_n,".pdf"),    #         
+           plot = gg_test1,
+           width = 8,        # 5 x 300 pixels
+           height = case_when(str_detect(option_here,"all") ~ 6.5,
+                              TRUE ~ 5.5),
+           dpi = 300,
+       #    units = "in",
+           device=cairo_pdf)   
+    
+    
+pretty_theme <- theme(text = element_text(family='Arial'),
+                      panel.background = element_rect(fill = "white",color="black"),
+                      panel.grid.major = element_blank(),
+                      panel.grid.minor = element_blank(),
+                      plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                      plot.title = element_text(family='Arial',color="black", size=14, face="bold",margin=margin(1,1,4,0)),
+                      plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                      axis.title.x = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(4,0,0,0)),
+                      axis.title.y = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(0,4,0,0)),
+                      legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                      legend.text = element_text(family='Arial',color="black", size=11, face="plain"),
+                      axis.text.x = element_text(family='Arial',color="black", size=11, face="plain",angle = 30,
+                                                 vjust = 1, hjust=1,margin=margin(0,0,0,0)),
+                      axis.ticks = element_line(),
+                      plot.background = element_rect(
+                        fill = "white",
+                        colour = "white",
+                        size = 1),
+                      strip.background = element_rect(
+                        fill = "white",
+                        colour = "white",
+                        size = 1),
+                      strip.text.x = element_text(family='Arial',color="black", size=14,
+                                                  face="plain",margin=margin(1,0,2,0)),
+                      strip.text.y = element_text(family='Arial',color="black", size=14,
+                                                  face="plain",margin=margin(1,0,2,0)),
+                      axis.text.y = element_text(family='Arial',color="black", size=10,
+                                                 face="plain"),
+                      legend.key.width=unit(.8, "cm"),
+                      legend.key.height=unit(0.4, "cm"),
+                      legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                      legend.position="top",
+                      legend.justification="right",
+                      legend.margin=margin(0,0,0,0),
+                      legend.box.margin=margin(1,1,1,1),
+                      legend.background = element_rect(fill = "transparent",
+                                                       colour = "transparent",
+                                                       size = 1)
+                      #                 legend.position = c(1.15, 0.4)
+)
+
+    
+    gg_test1 <- ggplot(df_to_plot) + 
+      geom_tile(data = df_to_plot,
+                aes(x = as.factor(parameter),y = as.factor(recluster_ordered),
+                    fill = as.numeric(value)),
+                alpha = 0.9) +
+      #    gg_box <- ggplot(df_to_boxplot) + 
+      #        geom_violin(aes(x = Parameter,y=Values,color = refined_cluster)) + 
+      #        geom_jitter(aes(x = Parameter,y=Values,color = refined_cluster),size = 0.2,width = 0.1,height = 0) + 
+      ggtitle(paste0(title_here)) + 
+      guides(fill = guide_colorbar(title = lab_here,
+                                   title.position = "top")
+             #         size = guide_legend(title = "Metacluster share of all Spike and non-Spike\n IFNg+ or IL2+ ",subtype," (%)",
+             #                             title.position = "top")
+      ) +  pretty_theme + #facet_grid(primary_window ~., space = "free",scales = "free",drop = TRUE) +
+      scale_fill_gradientn(colors = my_palette_intensities,
+                           name=lab_here,
+                           limits = c(left_lim,right_lim),breaks = seq(0,lim_here), oob = squish) +
+    #  ggtitle(#paste0("Metacluster characteristics and coherence")
+      #          ) +
+      xlab("Parameters") + ylab("Cluster")
+    #facet_wrap(stimulation~.) 
+    
+    
+    
+    
+    #plot(gg_test1)
+    #
+    testing_n <- paste0("cluster_medians")
+    
+    ggsave(paste0(plot_path_here_heat,"/",OG_cluster_meth,"_",testing_n,".png"),    #         
+           plot = gg_test1,
+           width = 7,        # 5 x 300 pixels
+           height = 5,
+           dpi = 300,
+           units = "in",
+           device=png)   
+    
+    
+    
+    
+    print("made it here three")
+    
+    print("une montage")
+    
+    
+    
+    
+    plot_path_here_mont <- paste0(plot_path_here,"/montage")
+    suppressWarnings(dir.create(plot_path_here_mont))
+    
+    df_bound_here %>% colnames()
+    
+    df_to_gather <- df_bound_here %>% 
+      as.data.frame() %>% 
+      dplyr::select(all_of(c(params_oi_here,"re_UMAP1","re_UMAP2")))
+    
+    df_gathered <- gather(df_to_gather, "parameter", "value",
+                          -"re_UMAP1",-"re_UMAP2")
+    
+    print(summary(df_gathered))
+    
+    df_gathered$value <- df_gathered$value %>% as.numeric()
+    
+    #    label_size_montage
+    
+    label_size_montage <- 4
+    max_here <- df_gathered$value %>% max()
+    min_here <- df_gathered$value %>% min()
+    min_here
+    breaks = seq(0,4,by=0.05)
+    
+    palette=c("blue","lightblue","yellow","darkorange","darkred")
+    my_palette_intensities <- colorRampPalette(palette)(n=length(breaks)-1)
+    #df_gathered %>% dim()
+    
+    df_gathered_s <- df_gathered[sample(nrow(df_gathered),400000),]
+    
+    #df_gathered_s$parameter %>% unique()
+    
+    df_gathered_s <- transform(df_gathered_s, parameter = 
+                                 factor(parameter,
+                                        levels = c(params_oi_here)))
+    
+    lim_here <- case_when(do_glass_half_full_scaling ~ 2,
+                          TRUE ~ 5)
+    
+    lab_here <- case_when(!do_glass_half_full_scaling ~ paste0("arcsinh-transformed value"),
+                          TRUE ~ paste0("scaled arcsinh-transformed value"))
+    
+    gg_test1 <- ggplot(data = df_gathered_s, aes(x = re_UMAP1, y = re_UMAP2)) + 
+      geom_point(data = df_gathered_s,aes(colour = value),alpha = 0.3,size = 0.075) +
+      geom_text(data = cluster_medians_bound_here,aes(x = re_UMAP1, 
+                                                      y = re_UMAP2,
+                                                      label = as.factor(recluster_ordered)),
+                size = label_size_montage,
+                colour = "black",alpha = 1) + 
+      xlab("UMAP1") + ylab("UMAP2") +
+      pretty_theme + facet_wrap(.~ parameter,
+                                nrow = 4) + 
+      ggtitle(paste0("Parameter montage for ",subset_here_label," clusters")) +
+      #  ggtitle(paste0("UMAP display of ", stim_slice," cells, by ",param),
+      #          subtitle = paste0("plotting ",for_viz*100," percent of ",cells_N,"  ",subtype,"s in batch ",this_batch, ".")) + 
+      scale_colour_gradientn(colors = my_palette_intensities,
+                             name=lab_here,
+                             limits = c(-2,lim_here),breaks = seq(0,lim_here), oob = squish) + 
+      #  scale_colour_gradient2(low="royalblue1",mid = "goldenrod2",high="firebrick2",midpoint = 2,
+      #                         name=paste0("arcsinh(500)-transformed value "),
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      guides(colour= guide_colorbar(title.position = "top")) 
+    #
+    
+    
+    testing_n <- paste0("parameter_montage_full")
+    width_mont <- 17
+    
+    height_mont <- 11
+    
+    ggsave(paste0(plot_path_here_mont,"/",OG_cluster_meth,"_",testing_n,".png"),    #         
+           gg_test1,
+           width = width_mont,        # 5 x 300 pixels
+           height = height_mont,
+           dpi = 300,
+           units = "in",
+           device=png,
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )        # smaller font size
+    
+    df_bound_here$batch %>% unique()
+    
+    df_to_gather <- df_bound_here %>% as.data.frame() %>% 
+      dplyr::select(all_of(c(params_oi_here,"re_UMAP1","re_UMAP2")))
+    
+    df_gathered <- gather(df_to_gather, "parameter", "value",
+                          -"re_UMAP1",-"re_UMAP2")
+    
+    print(summary(df_gathered))
+    
+    df_gathered$value <- df_gathered$value %>% as.numeric()
+    
+    #    label_size_montage
+    
+    label_size_montage <- 4
+    max_here <- df_gathered$value %>% max()
+    min_here <- df_gathered$value %>% min()
+    min_here
+    breaks = seq(0,4,by=0.05)
+    
+    palette=c("blue","lightblue","yellow","darkorange","darkred")
+    my_palette_intensities <- colorRampPalette(palette)(n=length(breaks)-1)
+    #df_gathered %>% dim()
+    
+    df_gathered_s <- df_gathered[sample(nrow(df_gathered),400000),]
+    
+    #df_gathered_s$parameter %>% unique()
+    
+    df_gathered_s <- transform(df_gathered_s, parameter = 
+                                 factor(parameter,
+                                        levels = c(params_oi_here)))
+    
+    lim_here <- case_when(do_glass_half_full_scaling ~ 2,
+                          TRUE ~ 4)
+    
+    lab_here <- case_when(!do_glass_half_full_scaling ~ paste0("arcsinh-transformed value"),
+                          TRUE ~ paste0("scaled arcsinh-transformed value"))
+    
+    gg_test1 <- ggplot(data = df_gathered_s, aes(x = re_UMAP1, y = re_UMAP2)) + 
+      geom_point(data = df_gathered_s,aes(colour = value),alpha = 0.3,size = 0.075) +
+      geom_text(data = cluster_medians_bound_here,aes(x = re_UMAP1, 
+                                                      y = re_UMAP2,
+                                                      label = as.factor(recluster_ordered)),
+                size = label_size_montage,
+                colour = "black",alpha = 1) + 
+      xlab("global UMAP1") + ylab("global UMAP2") +
+      pretty_theme + facet_wrap(.~ parameter,
+                                nrow = 4) + 
+      ggtitle(paste0("Parameter montage for ",subset_here_label," clusters")) +
+      #  ggtitle(paste0("UMAP display of ", stim_slice," cells, by ",param),
+      #          subtitle = paste0("plotting ",for_viz*100," percent of ",cells_N,"  ",subtype,"s in batch ",this_batch, ".")) + 
+      scale_colour_gradientn(colors = my_palette_intensities,
+                             name=lab_here,
+                             limits = c(0,lim_here),breaks = seq(0,lim_here), oob = squish) + 
+      #  scale_colour_gradient2(low="royalblue1",mid = "goldenrod2",high="firebrick2",midpoint = 2,
+      #                         name=paste0("arcsinh(500)-transformed value "),
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      guides(colour= guide_colorbar(title.position = "top")) 
+    #
+    
+    
+    testing_n <- paste0("parameter_montage")
+    width_mont <- 17
+    
+    height_mont <- 11
+    
+    ggsave(paste0(plot_path_here_mont,"/",OG_cluster_meth,"_",testing_n,"_zoom.png"),    #         
+           gg_test1,
+           width = width_mont,        # 5 x 300 pixels
+           height = height_mont,
+           dpi = 300,
+           units = "in",
+           device=png,
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )        # smaller font size
+    
+    
+    
+    # a montage for each cluster!
+    clusters_here <- df_bound_here$recluster_ordered    %>% unique() %>% sort() 
+    clusters_here <- clusters_here %>% as.integer() %>% sort()
+    
+    clusters_here
+    
+    
+    true_batches <- df_bound_here$true_batch %>% unique()
+#    true_batches
+#    for (tru_batch in true_batches) {
+    for (cluster_here in clusters_here) {
+      
+      df_to_gather <- df_bound_here %>% dplyr::filter(recluster_ordered == cluster_here) %>%
+        as.data.frame() %>% 
+        dplyr::select(all_of(c(params_oi_here,"re_UMAP1","re_UMAP2")))
+      
+      df_gathered <- gather(df_to_gather, "parameter", "value",
+                            -"re_UMAP1",-"re_UMAP2")
+      
+      print(summary(df_gathered))
+      
+      df_gathered$value <- df_gathered$value %>% as.numeric()
+      
+      #    label_size_montage
+      
+      label_size_montage <- 4
+      max_here <- df_gathered$value %>% max()
+      min_here <- df_gathered$value %>% min()
+      min_here
+      breaks = seq(0,3,by=0.05)
+      
+      palette=c("blue","lightblue","yellow","darkorange","darkred")
+      my_palette_intensities <- colorRampPalette(palette)(n=length(breaks)-1)
+      #df_gathered %>% dim()
+      min_sample <- dim(df_gathered)[1]
+      
+      df_gathered_s <- df_gathered[sample(nrow(df_gathered),min(min_sample,400000)),]
+      
+      #df_gathered_s$parameter %>% unique()
+      
+      df_gathered_s <- transform(df_gathered_s, parameter = 
+                                   factor(parameter,
+                                          levels = c(params_oi_here)))
+      
+      lim_here <- case_when(do_glass_half_full_scaling ~ 1,
+                            TRUE ~ 4)
+      
+      lab_here <- case_when(!do_glass_half_full_scaling ~ paste0("arcsinh-transformed value"),
+                            TRUE ~ paste0("scaled arcsinh-transformed value"))
+      
+      gg_test1 <- ggplot(data = df_gathered_s, aes(x = re_UMAP1, y = re_UMAP2)) + 
+        geom_point(data = df_gathered_s,aes(colour = value),alpha = 0.3,size = 0.1) +
+        geom_text(data = cluster_medians_bound_here,# %>% dplyr::filter(cluster_ordering == cluster_here)
+                  aes(x = re_UMAP1, 
+                      y = re_UMAP2,
+                      label = as.factor(recluster_ordered)),
+                  size = label_size_montage,
+                  colour = "black",alpha = 1) + 
+        xlab("UMAP1") + ylab("UMAP2") +
+        pretty_theme + facet_wrap(.~ parameter,
+                                  nrow = 4) + 
+        ggtitle(paste0("Parameter montage for ",subset_here_label," cluster:",cluster_here)) +
+        #  ggtitle(paste0("UMAP display of ", stim_slice," cells, by ",param),
+        #          subtitle = paste0("plotting ",for_viz*100," percent of ",cells_N,"  ",subtype,"s in batch ",this_batch, ".")) + 
+        scale_colour_gradientn(colors = my_palette_intensities,
+                               name=lab_here,
+                               limits = c(0,lim_here),breaks = seq(0,lim_here), oob = squish) + 
+        #  scale_colour_gradient2(low="royalblue1",mid = "goldenrod2",high="firebrick2",midpoint = 2,
+        #                         name=paste0("arcsinh(500)-transformed value "),
+        #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+        guides(colour= guide_colorbar(title.position = "top")) 
+      #
+      
+      
+      testing_n <- paste0("parameter_montage_",cluster_here,"_full")
+      width_mont <- 17
+      
+      height_mont <- 11
+      plot_path_here_mont
+      ggsave(paste0(plot_path_here_mont,"/",OG_cluster_meth,"_",testing_n,".png"),    #         
+             gg_test1,
+             width = width_mont,        # 5 x 300 pixels
+             height = height_mont,
+             dpi = 300,
+             units = "in",
+             device=png,
+             #    res = 1.1*res_here,            # 300 pixels per inch
+             #pointsize = 10
+      )        # smaller font size
+      
+    }
+#    }    
+    
+    
+    
+    
+}
+    
+        
+      
+new_pretty_plots_zoom(df_bound_look_close %>% dplyr::filter(!str_detect(file_type,"CTRL")),
+                        new_recluster_medians_plus,
+                   params_now,
+                   plot_path_now_zoom,
+                   my_palette_shuffled)
+
+
+
+```
+
+
+
+
+   
+#-------- boxplots  -----------
+   
+``` {r , echo=FALSE}
+
+
+
+#------------ do some frequency plots ------------
+
+print("#----- do some frequency plots ------------")
+
+do_frequency_plots <- TRUE
+
+plot_path_now_details
+plotpath_now_stacked <- paste0(plot_path_now_details,"/stacked_frequencies")
+
+
+suppressWarnings(dir.create(plotpath_now_stacked))
+
+
+if (do_frequency_plots) {
+  
+  
+  df_cols <- df_bound_look_close %>% colnames()
+  df_cols
+  
+  freq_cols <- df_cols[str_detect(df_cols,"freq") #| str_detect(df_cols,"count") | str_detect(df_cols,"size")
+  ]
+  freq_cols
+  
+  more_cols <- c("batch","PTID","file","recluster_ordered","recluster_ordered_w_freq")
+  
+  
+  df_mc_frequencies <- df_bound_look_close %>% as.data.frame() %>% 
+    dplyr::select(all_of(c(more_cols,freq_cols))) %>% distinct() #%>% dim()
+  
+  df_mc_frequencies_batch_window_info <- df_mc_frequencies %>% 
+    dplyr::select(all_of(c("batch","file","recluster_ordered","batch_cluster_freq","window_cluster_freq"))) %>% distinct()
+  
+  df_mc_frequencies <- df_mc_frequencies %>%
+    dplyr::select(-all_of(c("batch_cluster_freq","window_cluster_freq")))# %>% distinct() #%>% dim()
+  
+  # make sure it's complete ---- 
+  
+  
+  
+  
+  #  df_mc_frequencies$batch_PTID_cluster_freq
+  
+  
+  df_mc_frequencies_dat <- df_mc_frequencies %>% 
+    dplyr::select(all_of(c("batch",
+                           "PTID","file",
+                           "recluster_ordered",
+                           #"batch_cluster_freq","window_cluster_freq",
+                           "batch_PTID_cluster_freq"))) 
+  
+  
+  
+  cluster_here <- df_mc_frequencies$recluster_ordered %>% unique() %>% as.integer() %>% sort() %>% as.character()
+  cluster_here
+  
+  df_mc_frequencies_dat <- df_mc_frequencies_dat %>% pivot_wider(names_from = "recluster_ordered",
+                                                                 values_from = "batch_PTID_cluster_freq") %>% 
+    pivot_longer(cols = all_of(cluster_here),
+                 names_to = "recluster_ordered")# %>% view()
+  
+  #df_mc_frequencies_dat %>% view()
+  
+  df_mc_frequencies_dat$batch_PTID_cluster_freq <-   df_mc_frequencies_dat$value %>% replace_na(0.000001)
+  df_mc_frequencies_dat$value <- NULL 
+  
+  
+  df_mc_frequencies_other <- df_mc_frequencies %>% 
+    dplyr::select(-all_of(c("batch_PTID_cluster_freq"))) 
+  
+  #df_mc_frequencies_other %>% view()
+  
+  df_mc_frequencies_other %>% dim()
+  df_mc_frequencies_dat %>% dim()
+  
+  df_mc_frequencies_other %>% colnames()
+  df_mc_frequencies_dat %>% colnames()
+  
+  
+  df_mc_frequencies_other$recluster_ordered <- df_mc_frequencies_other$recluster_ordered %>% as.integer()
+  df_mc_frequencies_dat$recluster_ordered <- df_mc_frequencies_dat$recluster_ordered %>% as.integer()
+  
+  df_mc_frequencies_other$recluster_ordered_w_freq <- NULL
+  df_mc_frequencies_other$freq <- NULL
+  
+  df_mc_frequencies_complete <- right_join(df_mc_frequencies_other,df_mc_frequencies_dat) #%>% view()
+  
+  #df_mc_frequencies_complete %>% view()
+  
+  #df_mc_frequencies_complete %>% 
+  #  group_by(batch,PTID) %>% add_count() %>% dplyr::arrange(PTID,Meta_Phenograph_Leiden) %>%  view()
+  
+  
+  df_mc_frequencies_batch_window_info$recluster_ordered <-   df_mc_frequencies_batch_window_info$recluster_ordered %>% as.integer()
+  
+  
+  
+  df_mc_frequencies_batch_complete <- df_mc_frequencies_batch_window_info %>% 
+    dplyr::select(-all_of("window_cluster_freq")) %>% distinct() %>% 
+    pivot_wider(names_from = "recluster_ordered",
+                values_from = "batch_cluster_freq") %>% 
+    pivot_longer(cols = all_of(cluster_here),
+                 names_to = "recluster_ordered")# %>% view()
+  
+  
+  df_mc_frequencies_batch_complete$batch_cluster_freq <-   df_mc_frequencies_batch_complete$value %>% replace_na(0.000001)
+  df_mc_frequencies_batch_complete$value <- NULL 
+  
+  
+  
+  df_mc_frequencies_window_complete <- df_mc_frequencies_batch_window_info %>% 
+    dplyr::select(-all_of("batch_cluster_freq")) %>% distinct() %>% 
+    pivot_wider(names_from = "recluster_ordered",
+                values_from = "window_cluster_freq") %>% 
+    pivot_longer(cols = all_of(cluster_here),
+                 names_to = "recluster_ordered")# %>% view()
+  
+  
+  
+  
+  
+  df_mc_frequencies_window_complete$window_cluster_freq <-   df_mc_frequencies_window_complete$value %>% replace_na(0.000001)
+  df_mc_frequencies_window_complete$value <- NULL 
+
+  df_mc_frequencies_batch_window_info_complete <- right_join(df_mc_frequencies_window_complete,df_mc_frequencies_batch_complete)
+  df_mc_frequencies_batch_window_info_complete$recluster_ordered <- df_mc_frequencies_window_complete$recluster_ordered %>% as.integer()
+  
+  df_mc_frequencies_complete <- right_join(df_mc_frequencies_batch_window_info_complete,df_mc_frequencies_complete) #%>% view()
+  
+  
+  # df_mc_frequencies_complete %>% dplyr::arrange(batch,PTID) %>% view()
+  
+  #  df_rebound_s_bound %>% dplyr::filter(PTID == "U27354") %>% dplyr::filter(Meta_Phenograph_Leiden == "1",
+  #                                                                           days_since_transfusion == "D28") %>% view()
+  #  
+  #  df_mc_frequencies %>% dplyr::filter(PTID == "U27354") %>% dplyr::filter(Meta_Phenograph_Leiden == "1",
+  #                                                                                 days_since_transfusion == "D28") %>% view()
+  #  
+  #  df_mc_frequencies %>% dplyr::filter(PTID_new == "A01",
+  #                                                  days_since_transfusion == "D28") %>% view()
+  
+
+  df_mc_frequencies <- df_mc_frequencies_complete
+  
+  
+  
+  
+  
+#  new_recluster_medians_plus %>% view()
+  new_recluster_medians_plus$recluster_ordered  <-   new_recluster_medians_plus$recluster_ordered  %>% as.integer()
+  new_recluster_medians_plus %>% colnames()
+  
+
+    df_mc_frequencies$recluster_ordered %>% unique()
+  new_recluster_medians_plus <- new_recluster_medians_plus %>% dplyr::arrange(recluster_ordered) %>% 
+    mutate(recluster_ordered_w_freq = paste0(recluster_ordered," (",round(100*freq,2),"%)"))
+  
+  cluster_levels <- 
+    new_recluster_medians_plus$recluster_ordered %>% as.numeric() %>% unique() %>% sort() %>% as.character()
+  cluster_levels
+#  print("made it here")
+  cluster_levels_w_freq <- 
+    new_recluster_medians_plus$recluster_ordered_w_freq %>% unique() #%>% sort() %>% as.character()
+  cluster_levels_w_freq
+  
+  
+  
+  new_recluster_medians_plus$recluster_ordered <- new_recluster_medians_plus$recluster_ordered %>% as.integer()
+  
+  cluster_info_to_join <-  new_recluster_medians_plus %>% as.data.frame() %>% dplyr::select(all_of(c("recluster_ordered","freq","recluster_ordered_w_freq")))
+  
+  df_mc_frequencies <- right_join(cluster_info_to_join,df_mc_frequencies) #%>% view()
+  
+  df_mc_frequencies$recluster_ordered_w_freq %>% unique()
+  
+  df_mc_frequencies <- transform(df_mc_frequencies, recluster_ordered_w_freq = 
+                                   factor(recluster_ordered_w_freq,
+                                          levels = c(cluster_levels_w_freq)))
+  
+  
+  
+  pvs_here <- df_mc_frequencies$PTID %>% unique()
+  
+  
+
+  title_here <- paste0(T_subtype," ",subtype," cell cluster frequencies across samples")
+  
+  
+  
+  df_mc_frequencies %>% write_csv(paste0(plotpath_now_stacked,"/df_mc_frequencies_zoom.csv"))
+  
+  
+  my_palette_shuffled
+
+  if (option_here == "all") {
+    palette_here_batch_no_ctrl <- c("grey50","gold","#a88ddd")
+  } 
+  if (option_here == "EGFRt") {
+    palette_here_batch_no_ctrl <- c("gold","#a88ddd")
+  }
+  if (option_here == "PRE") {
+    palette_here_batch_no_ctrl <- c("grey50")
+  }
+  
+  
+  palette_here_file_type_ctrl <- c("grey50","#244093","#39b078","#ef9632","#e2282d")
+  palette_here_file_type_no_ctrl <- c("#244093","#39b078","#ef9632","#e2282d")
+  palette_here_file_type_high_med_low <- c("#39b078","#ef9632","#e2282d")
+  
+  df_mc_frequencies$recluster_ordered <- df_mc_frequencies$recluster_ordered
+
+  
+  
+  df_mc_frequencies <- df_mc_frequencies %>% mutate(file_type = case_when(str_detect(file,"^HIGH") ~ "HIGH",
+                                                                          str_detect(file,"^LOW") ~ "LOW",
+                                                                          str_detect(file,"^MED") ~ "MED",
+                                                                          str_detect(file,"^CLL") ~ "CLL",
+                                                                          TRUE ~ "CTRL"))
+  
+  df_mc_frequencies <- df_mc_frequencies %>% 
+    mutate(gate_type = case_when(str_detect(file,"EGFRt") ~ paste0("EGFRt+ ",T_subtype),
+                                 TRUE ~ paste0(T_subtype)))
+  
+  
+  files_types <- df_mc_frequencies$file_type %>% unique()
+  
+  file_type_levels <- c(files_types[str_detect(files_types,"CTRL")],
+                        files_types[str_detect(files_types,"CLL")],
+                        files_types[str_detect(files_types,"HIGH")],
+                        files_types[str_detect(files_types,"MED")],
+                        files_types[str_detect(files_types,"LOW")]
+  )
+  
+  df_mc_frequencies <- transform(df_mc_frequencies,
+                                 file_type=factor(file_type,
+                                                  levels=c(file_type_levels)))
+  #df_mc_frequencies %>% view()
+
+  
+  df_mc_frequencies$window <- df_mc_frequencies$batch %>% str_remove("_.*") # %>% unique()
+  
+  #df_mc_frequencies$window <- df_mc_frequencies$window %>% as.character()
+  window_levels <- df_mc_frequencies$window %>% unique() %>% sort()
+df_mc_frequencies$window %>% unique() %>% sort()
+  
+  window_levels <- c("PRE","IP","PEAK")
+  
+  df_mc_frequencies <- transform(df_mc_frequencies,
+                                 window=factor(window,
+                                               levels=c(window_levels)))
+  
+  
+  
+  
+  df_mc_frequencies_no_ctrl <- df_mc_frequencies %>% dplyr::filter(!str_detect(file,"CTRL"))
+  
+  CD8_PEAK_exclude <- c("X590","X645","X680")
+  CD4_PEAK_exclude <- c("X645","X680","X590","X641","X579","X461","X657")
+  
+  
+  if (T_subtype == "CD4") {
+    PEAK_to_exclude <-  CD4_PEAK_exclude
+  }  else {
+    PEAK_to_exclude <-  CD8_PEAK_exclude
+  }
+  
+  #df_mc_frequencies_no_ctrl_excluded$cluster_ordering_w_freq %>% unique()
+#  df_mc_frequencies_no_ctrl$
+  df_mc_frequencies_no_ctrl_excluded <- df_mc_frequencies_no_ctrl %>% 
+    dplyr::filter(!(PTID %in% c(PEAK_to_exclude) & str_detect(window,"PEAK")))
+  
+#
+#  
+#  
+#window_levels
+  
+#  df_mc_frequencies_no_ctrl$window %>% unique()
+   
+  
+  df_mc_frequencies_no_ctrl_excluded <- df_mc_frequencies_no_ctrl %>% 
+    dplyr::filter(!(
+      (PTID %in% c(PEAK_to_exclude)) & str_detect(window,"PEAK")
+    ))
+  
+
+  
+    
+  df_mc_frequencies_no_ctrl_excluded %>% dplyr::filter(str_detect(batch,"IP"),
+                                                       str_detect(file,"LOW")) %>% 
+    dplyr::select(c(batch,PTID,recluster_ordered_w_freq,
+                    batch_PTID_cluster_freq)) %>% distinct() %>% 
+    dplyr::arrange(batch,PTID)
+  
+  
+  
+  plot_path_now_zoom_stack <- paste0(plot_path_now_zoom,"/stacked")
+  
+  suppressWarnings(dir.create(plot_path_now_zoom_stack))
+  
+  
+  
+  
+  
+pretty_theme_stacked_tiny <- theme(text = element_text(family='Arial'),
+                                   panel.background = element_rect(fill = "white",color="black"),
+                                   panel.grid.major = element_blank(),
+                                   panel.grid.minor = element_blank(),
+                                   plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                                   plot.title = element_text(family='Arial',color="black", size=14, face="bold",margin=margin(2,2,2,0)),
+                                   plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                                   axis.title.x = element_text(family='Arial',color="black", size=12, face="bold",margin=margin(4,0,0,0)),
+                                   axis.title.y = element_text(family='Arial',color="black", size=12, face="bold",margin=margin(0,4,0,0)),
+                                   legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                                   legend.text = element_text(family='Arial',color="black", size=11, face="plain"),
+                                   axis.text.x = element_text(family='Arial',color="black", size=6, 
+                                                              face="plain",angle = 60,
+                                                              vjust = 1, hjust=1,
+                                                              margin=margin(0,0,0,0)),
+                                   axis.text.y = element_text(family='Arial',color="black", size=12,
+                                                              face="plain"),
+                                   axis.ticks = element_line(),
+                                   plot.background = element_rect(
+                                     fill = "white",
+                                     colour = "white",
+                                     size = 1),
+                                   strip.background = element_rect(
+                                     fill = "white",
+                                     colour = "white",
+                                     size = 1),
+                                   strip.text.x = element_text(family='Arial',color="black", size=12,
+                                                               face="plain",margin=margin(1,0,2,0)),
+                                   strip.text.y = element_text(family='Arial',color="black", size=16,
+                                                               face="plain",margin=margin(1,0,1,7)),
+                                   legend.key.width=unit(.8, "cm"),
+                                   legend.key.height=unit(0.4, "cm"),
+                                   legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                                   legend.position="top",
+                                   legend.justification="right",
+                                   legend.margin=margin(0,0,0,0),
+                                   legend.box.margin=margin(1,1,1,1),
+                                   legend.background = element_rect(fill = "transparent",
+                                                                    colour = "transparent",
+                                                                    size = 1)
+                                   #                 legend.position = c(1.15, 0.4)
+)
+
+  
+  
+  
+  gg_test1 <- ggplot(df_mc_frequencies_no_ctrl) + 
+    geom_col(aes(x = as.factor(PTID) , 
+                 y = 100*batch_PTID_cluster_freq,
+                 fill = as.factor(recluster_ordered)),
+             linewidth = 0.1,alpha = 0.8) + 
+    scale_fill_manual(values = c(my_palette_shuffled),
+                      name=paste0("")#,
+                      #limits = c(-1,5),
+                      # breaks = seq(-1,5), 
+                      #   oob = squish
+    ) +
+    pretty_theme_stacked_tiny +    ggtitle(title_here) +  
+    #    scale_fill_discrete() + 
+    #  scale_fill_legend(name=paste0("Cluster")) + 
+    #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+    ylab("Cluster frequencies (%)\n by participants' visits") + 
+    xlab("PTID") + facet_grid( .~ window + file_type,
+                               scales = "free_x",
+                               space = "free_x", 
+                               drop=TRUE) +
+    guides(fill = guide_legend(nrow = 2))  
+  
+  
+  #plotpath_now %>% print()
+  
+  ggsave(paste0(plot_path_now_zoom_stack,"/stacked_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,".png"),    # create PNG for the heat map        
+         gg_test1,
+         width = case_when((str_detect(option_here,"EGFR") | str_detect(option_here,"all")) ~ 18,
+                           TRUE ~ 14),        # 5 x 300 pixels
+         height = 5,
+         dpi = 300,
+         units = "in",
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font s
+  
+  
+  ggsave(paste0(plot_path_now_zoom_stack,"/stacked_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,".pdf"),    # create PNG for the heat map        
+         gg_test1,
+         width = case_when((str_detect(option_here,"EGFR") | str_detect(option_here,"all")) ~ 18,
+                           TRUE ~ 14),        # 5 x 300 pixels
+         height = 5,
+         dpi = 300,
+         #       units = "in",
+         device=cairo_pdf
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font s
+  
+  #-------
+  
+  
+  #  df_mc_frequencies$w
+  gg_test1 <- ggplot(df_mc_frequencies_no_ctrl_excluded) + 
+    geom_col(aes(x = as.factor(PTID) , 
+                 y = 100*batch_PTID_cluster_freq,
+                 fill = as.factor(recluster_ordered)),
+             size = 0.1,alpha = 0.8) + 
+    scale_fill_manual(values = c(my_palette_shuffled),
+                      name=paste0("")#,
+                      #limits = c(-1,5),
+                      # breaks = seq(-1,5), 
+                      #   oob = squish
+    ) +
+    pretty_theme_stacked_tiny +    ggtitle(title_here) +  
+    #    scale_fill_discrete() + 
+    #  scale_fill_legend(name=paste0("Cluster")) + 
+    #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+    ylab("Cluster frequencies (%)\n by participants' visits") + 
+    xlab("PTID") + facet_grid( .~ window + file_type,
+                               scales = "free_x",
+                               space = "free_x", 
+                               drop=TRUE) +
+    guides(fill = guide_legend(nrow = 2))  
+  
+  
+  #plotpath_now %>% print()
+  plot_path_now_zoom_stack
+  
+  
+  ggsave(paste0(plot_path_now_zoom_stack,"/stacked_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,"_excluded.png"),    # create PNG for the heat map        
+         gg_test1,
+         width = case_when((str_detect(option_here,"EGFR") | str_detect(option_here,"all")) ~ 16,
+                           TRUE ~ 12),        # 5 x 300 pixels
+         height = 4.5,
+         dpi = 300,
+         units = "in",
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font s
+  
+  
+  ggsave(paste0(plot_path_now_zoom_stack,"/stacked_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,"_excluded.pdf"),    # create PNG for the heat map        
+         gg_test1,
+         width = case_when((str_detect(option_here,"EGFR") | str_detect(option_here,"all")) ~ 18,
+                           TRUE ~ 12),        # 5 x 300 pixels
+         height = 4.5,
+         dpi = 300,
+         device=cairo_pdf
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font s
+  
+  
+
+  
+  #  df_mc_frequencies$w
+  gg_test1 <- ggplot(df_mc_frequencies_no_ctrl_excluded) + 
+    geom_col(aes(x = as.factor(PTID) , 
+                 y = 100*batch_PTID_cluster_freq,
+                 fill = as.factor(recluster_ordered)),
+             size = 0.1,alpha = 0.8) + 
+    scale_fill_manual(values = c(my_palette_shuffled),
+                      name=paste0("")#,
+                      #limits = c(-1,5),
+                      # breaks = seq(-1,5), 
+                      #   oob = squish
+    ) +
+    pretty_theme_stacked_tiny +    ggtitle(title_here) +  
+    #    scale_fill_discrete() + 
+    #  scale_fill_legend(name=paste0("Cluster")) + 
+    #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+    ylab("Cluster frequencies (%)\n by participants' visits") + 
+    xlab("PTID") + facet_grid( .~ batch + file_type,
+                               scales = "free_x",
+                               space = "free_x", 
+                               drop=TRUE) +
+    guides(fill = guide_legend(nrow = 2))  
+  
+  
+  #plotpath_now %>% print()
+  
+  ggsave(paste0(plot_path_now_zoom_stack,"/stacked_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,"_excluded_batch.png"),    # create PNG for the heat map        
+         gg_test1,
+         width = case_when((str_detect(option_here,"EGFR") | str_detect(option_here,"all")) ~ 20,
+                           TRUE ~ 14),        # 5 x 300 pixels
+         height = 4.5,
+         dpi = 300,
+         units = "in",
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font s
+  
+  ggsave(paste0(plot_path_now_zoom_stack,"/stacked_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,"_excluded_batch.pdf"),    # create PNG for the heat map        
+         gg_test1,
+         width = case_when((str_detect(option_here,"EGFR") | str_detect(option_here,"all")) ~ 20,
+                           TRUE ~ 14),        # 5 x 300 pixels
+         height = 4.5,
+         dpi = 300,
+         device=cairo_pdf
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font s
+  
+  #------
+  
+  
+  
+  #  df_mc_frequencies
+  #df_mc_frequencies$sub_batch %>% unique()
+  #df_mc_frequencies$batch %>% unique()
+  
+  
+  #  df_mc_frequencies_other <- df_mc_frequencies %>% 
+  #    dplyr::select(-all_of(c(batch,PTID,cluster_ordering,batch_PTID_cluster_freq))) 
+  
+  
+  do_box_plots <- TRUE
+  
+  if (do_box_plots) {
+    
+    
+    
+    ####
+    pd1 = position_jitterdodge(dodge.width = 0.8, jitter.width = 0.2)
+    
+    
+    #    scale_y_continuous(trans = "log10",                          
+    #                       # labels = label_number(accuracy = 0.001),
+    #                       limits=c(0.0095,case_when(str_detect(subset_here_now,"CD8") ~ 15,
+    #                                                 str_detect(subset_here_now,"CD4") ~ 1.8)),
+    #                       #                           breaks = c(0.001,0.01,0.1,1,25)
+    #    ) +
+    #    in_house_theme_coarse_pasc + 
+    #    annotation_logticks(sides = "l")
+    ####
+    df_mc_frequencies <- df_mc_frequencies_no_ctrl_excluded
+
+    df_mc_frequencies$recluster_ordered
+    df_mc_frequencies$batch %>% unique()
+    df_mc_frequencies$batch <- df_mc_frequencies$batch %>% as.character()
+    df_mc_frequencies$window %>% unique()
+    #df_mc_frequencies <- df_mc_frequencies %>% mutate(window = str_remove(batch,"_[1-3]"))
+    df_mc_frequencies$sub_batch %>% unique()
+    
+    df_mc_frequencies$sub_batch <- df_mc_frequencies$batch
+    
+    df_mc_frequencies$batch <- df_mc_frequencies$window
+    #  df_mc_frequencies$batch
+    
+    add_n_per_bin <-  function(df_oi) {
+      #  df_oi <- df_to_plot_here_pre
+      df_oi %>% colnames()
+      df_oi <- df_oi %>% group_by(window,recluster_ordered_w_freq,file_type) %>% add_count(name = "n_per_bin")
+      return(df_oi)
+    }
+    
+    
+    add_n_per_bin_zoom <-  function(df_oi) {
+      #  df_oi <- df_to_plot_here_pre
+      df_oi %>% colnames()
+      df_oi <- df_oi %>% group_by(window,recluster_ordered_w_freq,file_type) %>% add_count(name = "n_per_bin")
+      return(df_oi)
+    }
+    
+    #  pd1
+    #  df_mc_frequencies$batch_PTID_visit_cluster_freq %>% summary()
+    
+    
+    #  df_mc_frequencies$metacluster %>% unique()
+    # df_mc_frequencies$days_since_transfusion %>% unique()
+    
+    #  df_mc_frequencies$cluster_ordering %>% unique()
+    #df_mc_frequencies %>% dplyr::filter(cluster_ordering == "11",
+    #                                                 days_since_transfusion == "D28") %>% dplyr::arrange(Graft,batch_PTID_visit_cluster_freq) #%>% view()
+    
+    
+    #df_mc_frequencies$Graft %>% unique()
+    
+    #  df_mc_frequencies
+    
+    width_here <- case_when(subtype == "CD4" ~ 10,
+                            TRUE ~ 10)
+    
+    height_here <- case_when(subtype == "CD4" ~ 60,
+                             TRUE ~ 6)
+    
+    
+    n_col_here <- 6
+    
+    df_mc_frequencies <- add_n_per_bin_zoom(df_mc_frequencies)
+    
+    
+    
+    df_mc_frequencies$n_per_bin
+    
+    n_data_pre <- df_mc_frequencies %>% as.data.frame() %>% dplyr::select(all_of(c("window","recluster_ordered","file_type","n_per_bin"))) %>% distinct()
+    
+    #n_data_pre %>% dplyr::arrange(days_since_transfusion,cluster_ordering_w_freq) %>% view()
+    
+    
+    #
+    #df_mc_frequencies$Graft <- df_mc_frequencies$Graft %>% str_replace("replete","Replete") %>% str_replace("deplete","Deplete")
+    
+    df_mc_frequencies$recluster_ordered %>% unique()
+    df_mc_frequencies$recluster_ordered <- df_mc_frequencies$recluster_ordered %>% as.integer()
+    
+    clust_ordering_levels <- df_mc_frequencies$recluster_ordered %>% as.integer() %>% unique() %>% sort() %>% as.character()
+    clust_ordering_levels
+    #cluster_levels_w_freq
+    df_mc_frequencies <- transform(df_mc_frequencies, recluster_ordered_w_freq = 
+                                     factor(recluster_ordered_w_freq,
+                                            levels = c(cluster_levels_w_freq)))
+    
+    #df_mc_frequencies <- df_mc_frequencies %>% dplyr::filter(!is.na(recluster_ordered_w_freq))
+    
+    df_mc_frequencies$recluster_ordered_w_freq %>% unique()
+    #cluster_levels_w_freq
+    #
+    df_mc_frequencies$batch %>% unique()
+    df_mc_frequencies$type %>% unique()
+    df_mc_frequencies$file_type %>% unique()
+    
+    #windows <- df_mc_frequencies$batch %>% unique()
+    
+    #windows <- c("PBMC_PRE","IP","PEAK")
+    
+    #df_mc_frequencies <- transform(df_mc_frequencies, batch = 
+    #                                 factor(batch,
+    #                                        levels = c(windows)))
+    
+    #clust_orderimng_levels
+    
+    
+    
+    plotpath_now_zoom_boxed <- paste0(plot_path_now_zoom,"/boxed")
+    
+    suppressWarnings(dir.create(plotpath_now_zoom_boxed))
+    
+    
+    df_mc_frequencies$file_type %>% unique()
+    
+    
+    
+    #df_mc_frequencies_no_ctrl$freq %>% unique()
+    
+    df_mc_frequencies_no_ctrl_select <- df_mc_frequencies_no_ctrl %>% dplyr::filter(#freq > 0.0075,
+                                                                                    !(str_detect(window, "PEAK") &
+                                                                                      PTID %in% c(PEAK_to_exclude)))
+    
+
+    
+    
+    
+    pd1 = position_jitterdodge(dodge.width = 0.7, jitter.width = 0.1)
+    #window_info_primary
+    
+    window_info_labels
+
+    #window_info_labels$recluster_ordered <- window_info_labels$recluster_ordered %>% as.integer()
+    
+    df_mc_frequencies_no_ctrl_select$recluster_ordered <- df_mc_frequencies_no_ctrl_select$recluster_ordered %>% as.integer()
+    
+    df_mc_frequencies_no_ctrl_select <- right_join(window_info_labels,df_mc_frequencies_no_ctrl_select)
+    #clust_ordering_levels    
+    
+    cluster_levels
+    df_mc_frequencies_no_ctrl_select$window %>% unique()
+    
+    df_mc_frequencies_no_ctrl_select <- transform(df_mc_frequencies_no_ctrl_select, primary_window = 
+                                                    factor(primary_window,
+                                                           levels = c(window_levels_here)))
+    
+    
+    df_mc_frequencies_no_ctrl_select <- transform(df_mc_frequencies_no_ctrl_select, recluster_ordered = 
+                                     factor(recluster_ordered,
+                                            levels = c(cluster_levels)))
+    
+    
+    #sink()
+    df_mc_frequencies_no_ctrl_select %>% dim()
+    df_mc_frequencies_no_ctrl_select %>% colnames()
+    #df_mc_frequencies_no_ctrl_select$primary_window <- NULL
+    
+    #df_mc_frequencies_no_ctrl_select$recluster_ordered
+    
+    df_mc_frequencies_no_ctrl_select %>% as.data.frame() %>% 
+      dplyr::select(all_of(c("recluster_ordered","primary_window"))) %>% distinct()  %>% print()
+    
+    
+    window_order <- df_mc_frequencies_no_ctrl_select %>% as.data.frame() %>% 
+      dplyr::select(all_of(c("recluster_ordered","primary_window"))) %>% distinct() 
+    
+    
+    
+    window_order <- window_order %>% 
+      arrange(primary_window,recluster_ordered) 
+    #print(window_order)
+    #window_info_labels
+    window_order
+    #df_mc_frequencies_no_ctrl_select
+    
+    df_mc_frequencies_no_ctrl_select <- df_mc_frequencies_no_ctrl_select %>% 
+      mutate(window_order = recluster_ordered) 
+    
+    levels_here <- window_order$recluster_ordered %>% unique()
+    levels_here
+    
+    
+    
+    df_mc_frequencies_no_ctrl_select <- transform(df_mc_frequencies_no_ctrl_select,window_order = 
+                                                    factor(window_order,
+                                                           levels = c(levels_here)))
+    
+    
+    
+    
+    
+    
+    #    STATS PREP
+    
+    if (FALSE) {
+      
+      
+      df_mc_frequencies_m <- df_mc_frequencies_no_ctrl_select
+      
+      df_mc_frequencies_m$recluster_ordered
+      
+      p_info_bound <- NULL
+      
+      clusters_here <-  df_mc_frequencies_m$recluster_ordered %>% unique() %>% as.integer() %>% sort()
+      
+      pvals <- NULL
+      
+      for (cluster_here in clusters_here) {
+#        cluster_here <- clusters_here[16]
+        #cluster_here
+        #df_mc_frequencies_m_a$CMV_status %>% unique()
+        #        cluster_here <- clusters_here[1]
+        
+        df_mc_frequencies_m <- df_mc_frequencies_m %>% 
+          mutate(batch_PTID_cluster_freq_log = log10(batch_PTID_cluster_freq + 0.005))
+        #df_mc_frequencies_m$cluster_ordering_w_freq <- NULL
+        
+        tester <-  df_mc_frequencies_m %>% dplyr::filter(recluster_ordered == cluster_here) #%>% view()
+        #tester %>% view()
+        
+        pw_here <- unique(tester$primary_window) %>% as.character()
+        
+        tester_slim <- tester %>% dplyr::filter(window == pw_here)
+        tester_slim
+        
+        
+        no_of_groups_here <- length(unique(tester_slim$file_type)) 
+        no_of_groups_here
+        
+#        df_mc_frequencies_m$batch_PTID_cluster_freq
+        
+        if (no_of_groups_here > 1) {
+          #df_mc_frequencies_m %>% class()
+          
+          
+#          df_mc_frequencies_m
+#          kruskal_test()
+         # df_mc_frequencies_m %>% dplyr::filter(recluster_ordered == cluster_here) %>% view()
+          
+#          tt_out <- kruskal_test(data = tester_slim %>% dplyr::filter(recluster_ordered == cluster_here),
+#                              formula =  batch_PTID_cluster_freq_log ~ file_type)
+          tt_out <- kruskal.test(batch_PTID_cluster_freq_log ~ file_type,
+                                 data = tester_slim)
+          
+
+          tt_out$p.value
+          
+          ptt_p <-  tt_out$p.value  
+          
+          
+          
+          if (FALSE) {
+            
+          lm_out_prep <- lm(batch_PTID_cluster_freq_log ~ file_type,
+                            data = tester_slim)
+          
+          s1 <- summary(lm_out_prep)
+          s1$coefficients %>% print()
+          #    s1$coefficients[2,4]
+          p <- c(s1$coefficients[2,4] %>% as.numeric())
+          }
+          
+          p <- ptt_p
+        } else {
+          p = 0
+        }
+        
+        pvals$recluster_ordered <- cluster_here %>% as.character()
+        pvals$p_prep <- p
+        pvals$ptt_p <- ptt_p
+        pvals <- pvals %>% as.data.frame()
+        p_info_bound <- rbind.data.frame(p_info_bound,pvals)
+      }  
+      
+      
+      pvalues <- p_info_bound$p_prep
+      ranks<-rank(pvalues, ties.method = "last")
+      p_m_over_k<-pvalues*length(pvalues)/ranks
+      for (r in length(pvalues):1) {
+        print(p_m_over_k[ranks>=r])
+      }
+      pvalues_adj<-c()
+      for (i in 1:length(pvalues)) {
+        
+        # find the rank
+        tmp_rank<-ranks[i]
+        
+        # get all the p_m_over_k that are greater or equal to this rank
+        # and get the min value
+        pvalues_adj<-c(pvalues_adj, min(1,min(p_m_over_k[ranks>=tmp_rank])))
+      }
+      
+      
+      print(pvalues_adj)
+      
+      
+      
+      p_info_bound$p_prep <- p_info_bound$p_prep#*length(clusters_here)
+      
+      p_info_bound <- p_info_bound %>% 
+        mutate(pval_anno = case_when(p_prep < 0.0001 ~ "**** ",
+                                     p_prep < 0.001 ~ "*** ",
+                                     p_prep < 0.01 ~ "** ",
+                                     p_prep < 0.05 ~ "* ",
+                                     TRUE ~ "")) 
+      
+      fdrs<-p.adjust(pvalues, method="BH")
+      print(fdrs)
+      
+      p_info_bound$p_bh <- pvalues_adj
+      
+      p_info_bound$ptt_p <- NULL
+      
+      plotpath_now_boxed
+      
+      plotpath_now_zoom_boxed
+      
+      write_csv(p_info_bound,paste0(plotpath_now_zoom_boxed,"/p_info_cluster_boxplots.csv"))
+
+            
+      
+            
+      df_info <- df_mc_frequencies_m %>% group_by(recluster_ordered) %>% 
+        mutate(max_freq = max(batch_PTID_cluster_freq)) %>% 
+        dplyr::select(all_of(c("recluster_ordered","max_freq"))) %>% 
+        summarise(max_freq) %>% distinct() 
+      
+      
+      df_info <- right_join(p_info_bound,df_info)
+
+      if (FALSE) {
+      
+      df <- df_mc_frequencies_m_c
+      df_mc_frequencies_m_c$CMV_status %>% unique()
+      
+      stat.test <- df %>% group_by(cluster_ordering) %>% 
+        wilcox_test(batch_PTID_cluster_freq ~ CMV_status) %>% 
+        adjust_pvalue(method = "bonferroni") %>%
+        add_significance("p.adj") %>% mutate(p.adj.label = 
+                                               case_when(p.adj < 0.01 ~ "p<0.01",
+                                                         p.adj < 0.05 ~ "p<0.05",
+                                                         TRUE ~ "")) #+
+      
+      #stat.test %>% view()
+      
+      
+      y_pos_info <- df %>% group_by(cluster_ordering) %>% 
+        mutate(max_freq = max(batch_PTID_cluster_freq)) %>% 
+        dplyr::select(all_of(c("cluster_ordering","max_freq"))) %>% 
+        summarise(max_freq) %>% distinct() 
+      
+      y_pos_info
+      y_pos_info <- y_pos_info %>% as.data.frame()
+      y_pos_vec <- y_pos_info$max_freq
+      rownames(y_pos_info) <- y_pos_info$cluster_ordering
+      #y_pos_vec[cluster_ordering]
+      y_clus_vec <- stat.test$cluster_ordering %>% as.integer()
+      y_clus_vec
+      
+      stat.test$y.position <- y_pos_vec[y_clus_vec]*110
+      
+      
+      stat.test <- stat.test %>%
+        add_x_position(x = "CMV_status") 
+      
+
+      
+      gg_test1 <- gg_bxp + stat_pvalue_manual(
+        stat.test,  
+        label = "{p.adj.signif}",
+        #    label = "{p.adj.label}", 
+        #        y.position = 100, 
+        tip.length = 0.03, hide.ns = TRUE,
+        size = 3,
+      )  + 
+        scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+      
+      
+      #gg_test1 <- gg_test1 + stat_info
+      ggsave(paste0(plotpath_now_boxed,"/boxplots_cluster_frequencies_per_PTID_",subtype,"_",k_here,"_",sample_label,"_CMV.png"),    # create PNG for the heat map        
+             gg_test1,
+             width = width_here,        # 5 x 300 pixels
+             height = height_here,
+             units = "in",
+             dpi = 400,
+             device=png
+             #    res = 1.1*res_here,            # 300 pixels per inch
+             #pointsize = 10
+      )        # smaller font s
+      
+      
+      }
+
+#    df_info <- NULL
+    df_info$recluster_ordered <- df_info$recluster_ordered %>% as.integer()
+#    
+  
+    df_info <- right_join(window_info_labels,df_info)
+    
+    df_info$window <- df_info$primary_window
+    
+#    df_info$
+      
+    }
+    
+    
+#    
+   pretty_theme_boxed <- theme(text = element_text(family='Arial'),
+                            panel.background = element_rect(fill = "white",color="black"),
+                            panel.grid.major = element_blank(),
+                            panel.grid.minor = element_blank(),
+                            plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                            plot.title = element_text(family='Arial',color="black", size=16, face="bold",margin=margin(2,2,1,0)),
+                            plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                            axis.title.x = element_text(family='Arial',color="black", size=12, face="bold",margin=margin(4,0,0,0)),
+                            axis.title.y = element_text(family='Arial',color="black", size=12, face="bold",margin=margin(0,4,0,0)),
+                            legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                            legend.text = element_text(family='Arial',color="black", size=12, face="plain"),
+                            axis.text.x = element_text(family='Arial',color="black", size=12, 
+                                                       face="plain",angle = 60,
+                                                       vjust = 1, hjust=1,
+                                                       margin=margin(0,0,0,0)),
+                            axis.text.y = element_text(family='Arial',color="black", size=12,
+                                                       face="plain"),
+                            axis.ticks = element_line(),
+                            plot.background = element_rect(
+                              fill = "white",
+                              colour = "white",
+                              size = 1),
+                            strip.background = element_rect(
+                              fill = "white",
+                              colour = "white",
+                              size = 1),
+                            strip.text.x = element_text(family='Arial',color="black", size=14,
+                                                        face="plain",margin=margin(1,0,2,0)),
+                            strip.text.y = element_text(family='Arial',color="black", size=16,
+                                                        face="plain",margin=margin(1,0,2,0)),
+                            legend.key.width=unit(.8, "cm"),
+                            legend.key.height=unit(0.4, "cm"),
+                            legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                            legend.position="top",
+                            legend.justification="right",
+                            legend.margin=margin(0,0,0,0),
+                            legend.box.margin=margin(1,1,1,1),
+                            legend.background = element_rect(fill = "transparent",
+                                                             colour = "transparent",
+                                                             size = 1)
+                            #                 legend.position = c(1.15, 0.4)
+)
+
+ 
+    
+    gg_test1 <- ggplot(data = df_mc_frequencies_no_ctrl_select) + 
+      geom_boxplot(data = df_mc_frequencies_no_ctrl_select,
+                   mapping = aes(x = as.factor(window) , 
+                                 y = 100*batch_PTID_cluster_freq,
+                                 fill = as.factor(file_type)),
+                   size = 0.06,alpha = 0.4,
+                   outlier.shape = NA,
+                   outlier.fill = NULL) + 
+      geom_point(data = df_mc_frequencies_no_ctrl_select,
+                 mapping = aes(x = as.factor(window) , 
+                               y = 100*batch_PTID_cluster_freq,
+                               color = as.factor(file_type)), 
+                 alpha = 0.6,#shape = 1,
+                 size = .6, position = pd1) + 
+#          geom_text(data = df_info,
+#                    mapping = aes(x = as.factor(window), 
+#                                  y = -0.1,
+#      #                            color = as.factor(pasc_status),
+#                                  label = paste0(pval_anno)),
+#      alpha = 1,size = 2  #, #position = pd1
+#          ) +
+      pretty_theme_boxed +     
+      #    scale_fill_discrete() + 
+      #  scale_fill_legend(name=paste0("Cluster")) + 
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      ylab("Cluster frequencies (%)") + xlab("Stage") + facet_wrap(. ~ recluster_ordered, 
+                                                                   #  scales = "free",
+                                                                   nrow = 2#,
+ #                                                                    space = "free", 
+#                                                                    drop=TRUE
+      ) +
+      
+      guides(#shape = guide_legend(nrow = 1, byrow = TRUE,title = paste0("Positivity call"),
+        #                     title.position = "top"),
+        fill = guide_legend(nrow = 2, byrow = TRUE,title = NULL,
+                            title.position = "right"),
+        color = "none"#,
+        #shape = FALSE
+        #           shape = guide_legend(nrow = 1,byrow = TRUE,title = "")
+      ) + scale_fill_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      #    "#fae765","#ad3168","#7667e0","#80bcda"
+      scale_color_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      ggtitle(paste0(T_subtype, " ",subtype," clusters"))
+    
+    #  plotpath_now_boxed
+    #    plotpath_now_boxed
+    
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_p.png"),    # create PNG for the heat map        
+           gg_test1,
+           width = 10,        # 5 x 300 pixels
+           height = 5.4,
+           dpi = 400,
+           units = "in",
+           device=png
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )        # smaller font s
+    
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_p.pdf"),    # create PNG for the heat map        
+           gg_test1,
+           width = 10,        # 5 x 300 pixels
+           height = 5.4,
+           device=cairo_pdf
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )  
+    
+    
+    gg_test1 <- ggplot(data = df_mc_frequencies_no_ctrl_select) + 
+      geom_boxplot(data = df_mc_frequencies_no_ctrl_select,
+                   mapping = aes(x = as.factor(window) , 
+                                 y = 100*batch_PTID_cluster_freq,
+                                 fill = as.factor(file_type)),
+                   size = 0.06,alpha = 0.4,
+                   outlier.shape = NA,
+                   outlier.fill = NULL) + 
+      geom_point(data = df_mc_frequencies_no_ctrl_select,
+                 mapping = aes(x = as.factor(window) , 
+                               y = 100*batch_PTID_cluster_freq,
+                               color = as.factor(file_type)), 
+                 alpha=0.6,#shape = 1,
+                 size = .6, position = pd1) + 
+      #    geom_text(data = n_data_pre,
+      #              mapping = aes(x = as.factor(COVID_stage_fine_short), 
+      #                            y = case_when(subset_here_now == "CD8" ~ 8,TRUE ~ 1.4) ,
+      #                            color = as.factor(pasc_status),
+      #                            label = paste0("n=",as.character(n_per_bin))
+      #              ),alpha = 1,size = 2, position = pd1
+      #    ) +
+      pretty_theme_boxed +     
+      #    scale_fill_discrete() + 
+      #  scale_fill_legend(name=paste0("Cluster")) + 
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      ylab("Cluster frequencies (%)") + xlab("Stage") + facet_wrap(. ~ primary_window + 
+                                                                     window_order , 
+                                                                 #  scales = "free",
+                                                                  nrow = 2#,
+                                                                 #  space = "free", 
+                                                                  # drop=TRUE
+      ) +
+      
+      guides(#shape = guide_legend(nrow = 1, byrow = TRUE,title = paste0("Positivity call"),
+        #                     title.position = "top"),
+        fill = guide_legend(nrow = 2, byrow = TRUE,title = NULL,
+                            title.position = "right"),
+        color = "none"#,
+        #shape = FALSE
+        #           shape = guide_legend(nrow = 1,byrow = TRUE,title = "")
+      ) + scale_fill_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      #    "#fae765","#ad3168","#7667e0","#80bcda"
+      scale_color_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      ggtitle(paste0(T_subtype, " ",subtype," clusters"))
+    
+    #  plotpath_now_boxed
+#    plotpath_now_boxed
+    
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,".png"),    # create PNG for the heat map        
+           gg_test1,
+           width = 10,        # 5 x 300 pixels
+           height = 6,
+           dpi = 400,
+           units = "in",
+           device=png
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )        # smaller font s
+    
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,".pdf"),    # create PNG for the heat map        
+           gg_test1,
+           width = 10,        # 5 x 300 pixels
+           height = 6,
+           device=cairo_pdf
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )  
+    
+    
+    
+    
+    #  df_mc_frequencies_no_ctrl_select$me
+    gg_test1 <- ggplot(data = df_mc_frequencies_no_ctrl_select) + 
+      geom_boxplot(data = df_mc_frequencies_no_ctrl_select,
+                   mapping = aes(x = as.factor(window) , 
+                                 y = log10(batch_PTID_cluster_freq + 0.005),
+                                 fill = as.factor(file_type)),
+                   size = 0.06,alpha = 0.4,
+                   outlier.shape = NA,
+                   outlier.fill = NULL) + 
+      geom_point(data = df_mc_frequencies_no_ctrl_select,
+                 mapping = aes(x = as.factor(window) , 
+                               y = log10(batch_PTID_cluster_freq + 0.005),
+                               color = as.factor(file_type)), 
+                 alpha=0.6,#shape = 1,
+                 size = .6, position = pd1) + 
+      #    geom_text(data = n_data_pre,
+      #              mapping = aes(x = as.factor(COVID_stage_fine_short), 
+      #                            y = case_when(subset_here_now == "CD8" ~ 8,TRUE ~ 1.4) ,
+      #                            color = as.factor(pasc_status),
+      #                            label = paste0("n=",as.character(n_per_bin))
+      #              ),alpha = 1,size = 2, position = pd1
+      #    ) +
+      pretty_theme_boxed +     
+      #    scale_fill_discrete() + 
+      #  scale_fill_legend(name=paste0("Cluster")) + 
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      ylab("Log10(Cluster frequencies + 0.005)") + xlab("Stage") + facet_wrap(. ~  window_order, 
+#                                                                              scales = "free",
+                                                                              nrow = 2#,
+#                                                                              space = "free", 
+##                                                                              drop=TRUE
+      ) +
+      
+      guides(#shape = guide_legend(nrow = 1, byrow = TRUE,title = paste0("Positivity call"),
+        #                     title.position = "top"),
+        fill = guide_legend(nrow = 2, byrow = TRUE,title = NULL,
+                            title.position = "right"),
+        color = "none"#,
+        #shape = FALSE
+        #           shape = guide_legend(nrow = 1,byrow = TRUE,title = "")
+      ) + scale_fill_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      #    "#fae765","#ad3168","#7667e0","#80bcda"
+      scale_color_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      ggtitle(paste0(T_subtype, " ",subtype," clusters"))
+    
+    #  plotpath_now_boxed
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_log.png"),    # create PNG for the heat map        
+           gg_test1,
+           width = 10,        # 5 x 300 pixels
+           height = 5.4,
+           dpi = 400,
+           units = "in",
+           device=png
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )        # smaller font s
+    
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_log.pdf"),    # create PNG for the heat map        
+           gg_test1,
+           width = 10,        # 5 x 300 pixels
+           height = 5.4,
+           device=cairo_pdf
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )  
+    
+    
+    
+    panels_to_do <- c("PRE","IP","PEAK")
+    
+
+  for (panel_to_do in c(panels_to_do)) {
+    
+   #panel_to_do <- panels_to_do[3]
+   
+   df_mc_frequencies_no_ctrl_select_here <- 
+     df_mc_frequencies_no_ctrl_select %>% 
+     dplyr::filter(primary_window == panel_to_do) %>%
+     dplyr::filter(window == panel_to_do)
+   
+#   df_mc_frequencies_no_ctrl_select_here$recluster_ordered %>% unique() %>% length()
+   
+   width_factor <- df_mc_frequencies_no_ctrl_select_here$recluster_ordered %>% unique() %>% length()
+   
+   
+pretty_theme_boxed_final <- theme(text = element_text(family='Arial'),
+                            panel.background = element_rect(fill = "white",color="black"),
+                            panel.grid.major = element_blank(),
+                            panel.grid.minor = element_blank(),
+                            plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                            plot.title = element_text(family='Arial',color="black", 
+                                                      size=16, face="bold",margin=margin(2,2,1,0)),
+                            plot.subtitle = element_text(family='Arial',color="black", 
+                                                         size=12, face="plain",margin=margin(0,0,0,0)),
+                            axis.title.x = element_text(family='Arial',color="black", 
+                                                        size=12, face="bold",margin=margin(4,0,0,0)),
+                            axis.title.y = element_text(family='Arial',color="black", 
+                                                        size=12, face="bold",margin=margin(0,4,0,0)),
+                            legend.title = element_text(family='Arial',color="black", 
+                                                        size=11, face="plain"),
+                            legend.text = element_text(family='Arial',color="black", size=12, face="plain"),
+                            axis.text.x = element_text(family='Arial',color="black", size=12, 
+                                                       face="plain",angle = 60,
+                                                       vjust = 1, hjust=1,
+                                                       margin=margin(0,0,0,0)),
+                            axis.text.y = element_text(family='Arial',color="black", size=12,
+                                                       face="plain"),
+                            axis.ticks = element_line(),
+                            plot.background = element_rect(
+                              fill = "white",
+                              colour = "white",
+                              size = 1),
+                            strip.background = element_rect(
+                              fill = "white",
+                              colour = "white",
+                              size = 1),
+                            strip.text.x = element_text(family='Arial',color="black", size=14,
+                                                        face="plain",margin=margin(1,0,2,0)),
+                            strip.text.y = element_text(family='Arial',color="black", size=16,
+                                                        face="plain",margin=margin(1,0,2,0)),
+                            legend.key.width=unit(0.8, "cm"),
+                            legend.key.height=unit(0.4, "cm"),
+                            legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                            legend.position="right",
+                            legend.justification="right",
+                            legend.margin=margin(0,0,0,0),
+                            legend.box.margin=margin(1,1,1,1),
+                            legend.background = element_rect(fill = "transparent",
+                                                             colour = "transparent",
+                                                             size = 1)
+                            #                 legend.position = c(1.15, 0.4)
+)
+
+
+
+pretty_theme_boxed_final_nox <- theme(text = element_text(family='Arial'),
+                                  panel.background = element_rect(fill = "white",color="black"),
+                                  panel.grid.major = element_blank(),
+                                  panel.grid.minor = element_blank(),
+                                  plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                                  plot.title = element_text(family='Arial',color="black", 
+                                                            size=16, face="bold",margin=margin(2,2,1,0)),
+                                  plot.subtitle = element_text(family='Arial',color="black", 
+                                                               size=12, face="plain",margin=margin(0,0,0,0)),
+                                  axis.title.x = element_text(family='Arial',color="black", 
+                                                              size=12, face="bold",margin=margin(4,0,0,0)),
+                                  axis.title.y = element_text(family='Arial',color="black", 
+                                                              size=12, face="bold",margin=margin(0,4,0,0)),
+                                  legend.title = element_text(family='Arial',color="black", 
+                                                              size=11, face="plain"),
+                                  legend.text = element_text(family='Arial',color="black", size=12, face="plain"),
+                                  axis.text.x = element_blank(),
+#                                  axis.text.x = element_text(family='Arial',color="black", size=12, 
+#                                                             face="plain",angle = 60,
+#                                                             vjust = 1, hjust=1,
+#                                                             margin=margin(0,0,0,0)),
+                                  axis.text.y = element_text(family='Arial',color="black", size=12,
+                                                             face="plain"),
+                                  axis.ticks = element_line(),
+                                  plot.background = element_rect(
+                                    fill = "white",
+                                    colour = "white",
+                                    size = 1),
+                                  strip.background = element_rect(
+                                    fill = "white",
+                                    colour = "white",
+                                    size = 1),
+                                  strip.text.x = element_text(family='Arial',color="black", size=14,
+                                                              face="plain",margin=margin(1,0,2,0)),
+                                  strip.text.y = element_text(family='Arial',color="black", size=16,
+                                                              face="plain",margin=margin(1,0,2,0)),
+                                  legend.key.width=unit(0.8, "cm"),
+                                  legend.key.height=unit(0.4, "cm"),
+                                  legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                                  legend.position="right",
+                                  legend.justification="right",
+                                  legend.margin=margin(0,0,0,0),
+                                  legend.box.margin=margin(1,1,1,1),
+                                  legend.background = element_rect(fill = "transparent",
+                                                                   colour = "transparent",
+                                                                   size = 1)
+                                  #                 legend.position = c(1.15, 0.4)
+)
+
+
+
+    gg_test1 <- ggplot(data = df_mc_frequencies_no_ctrl_select_here) + 
+      geom_boxplot(data = df_mc_frequencies_no_ctrl_select_here,
+                   mapping = aes(x = as.factor(window) , 
+                                 y = log10(batch_PTID_cluster_freq + 0.005),
+                                 fill = as.factor(file_type)),
+                   size = 0.06,alpha = 0.4,
+                   outlier.shape = NA,
+                   outlier.fill = NULL) + 
+      geom_point(data = df_mc_frequencies_no_ctrl_select_here,
+                 mapping = aes(x = as.factor(window) , 
+                               y = log10(batch_PTID_cluster_freq + 0.005),
+                               color = as.factor(file_type)), 
+                 alpha=0.6,#shape = 1,
+                 size = .6, position = pd1) + 
+      #    geom_text(data = n_data_pre,
+      #              mapping = aes(x = as.factor(COVID_stage_fine_short), 
+      #                            y = case_when(subset_here_now == "CD8" ~ 8,TRUE ~ 1.4) ,
+      #                            color = as.factor(pasc_status),
+      #                            label = paste0("n=",as.character(n_per_bin))
+      #              ),alpha = 1,size = 2, position = pd1
+      #    ) +
+      pretty_theme_boxed_final +     
+      #    scale_fill_discrete() + 
+      #  scale_fill_legend(name=paste0("Cluster")) + 
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      ylab("Log10(frequency + 0.005)") + 
+      xlab("") + facet_wrap(. ~  window_order, 
+                                                                              #                                                                              scales = "free",
+                                                                              nrow = 1#,
+                                                                              #                                                                              space = "free", 
+                                                                              ##                                                                              drop=TRUE
+      ) +
+      
+      guides(#shape = guide_legend(nrow = 1, byrow = TRUE,title = paste0("Positivity call"),
+        #                     title.position = "top"),
+        fill = guide_legend(nrow = 4, byrow = TRUE,title = NULL,
+                            title.position = "right"),
+        color = "none"#,
+        #shape = FALSE
+        #           shape = guide_legend(nrow = 1,byrow = TRUE,title = "")
+      ) + scale_fill_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      #    "#fae765","#ad3168","#7667e0","#80bcda"
+      scale_color_manual(values = c(palette_here_file_type_no_ctrl)) #+ 
+#      ggtitle(paste0(panel_to_do," ", 
+#                     T_subtype, " ",subtype," clusters"))
+    
+    
+    width_here <- case_when(panel_to_do == "PRE" ~ width_factor + 2,
+                            panel_to_do == "IP" ~ width_factor + 2,
+                            panel_to_do == "PEAK" ~ width_factor + 2)
+    
+    height_here <- case_when(panel_to_do == "PRE" ~ 3.35,
+                             panel_to_do == "IP" ~ 3.1,
+                             panel_to_do == "PEAK" ~ 3.6)
+    #  plotpath_now_boxed
+
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_log_",panel_to_do,".pdf"),    # create PNG for the heat map        
+           gg_test1,
+           width = width_here,        # 5 x 300 pixels
+           height = height_here,
+           device=cairo_pdf
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )  
+    
+   
+    
+    gg_test1 <- ggplot(data = df_mc_frequencies_no_ctrl_select_here) + 
+      geom_boxplot(data = df_mc_frequencies_no_ctrl_select_here,
+                   mapping = aes(x = as.factor(window) , 
+                                 y = log10(batch_PTID_cluster_freq + 0.005),
+                                 fill = as.factor(file_type)),
+                   size = 0.06,alpha = 0.4,
+                   outlier.shape = NA,
+                   outlier.fill = NULL) + 
+      geom_point(data = df_mc_frequencies_no_ctrl_select_here,
+                 mapping = aes(x = as.factor(window) , 
+                               y = log10(batch_PTID_cluster_freq + 0.005),
+                               color = as.factor(file_type)), 
+                 alpha=0.6,#shape = 1,
+                 size = .6, position = pd1) + 
+      #    geom_text(data = n_data_pre,
+      #              mapping = aes(x = as.factor(COVID_stage_fine_short), 
+      #                            y = case_when(subset_here_now == "CD8" ~ 8,TRUE ~ 1.4) ,
+      #                            color = as.factor(pasc_status),
+      #                            label = paste0("n=",as.character(n_per_bin))
+      #              ),alpha = 1,size = 2, position = pd1
+      #    ) +
+      pretty_theme_boxed_final_nox +     
+      #    scale_fill_discrete() + 
+      #  scale_fill_legend(name=paste0("Cluster")) + 
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      ylab("Log10(frequency + 0.005)") + 
+      xlab("") + facet_wrap(. ~  window_order, 
+                            #                                                                              scales = "free",
+                            nrow = 1#,
+                            #                                                                              space = "free", 
+                            ##                                                                              drop=TRUE
+      ) +
+      
+      guides(#shape = guide_legend(nrow = 1, byrow = TRUE,title = paste0("Positivity call"),
+        #                     title.position = "top"),
+        fill = guide_legend(nrow = 4, byrow = TRUE,title = NULL,
+                            title.position = "right"),
+        color = "none"#,
+        #shape = FALSE
+        #           shape = guide_legend(nrow = 1,byrow = TRUE,title = "")
+      ) + scale_fill_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      #    "#fae765","#ad3168","#7667e0","#80bcda"
+      scale_color_manual(values = c(palette_here_file_type_no_ctrl)) #+ 
+    #      ggtitle(paste0(panel_to_do," ", 
+    #                     T_subtype, " ",subtype," clusters"))
+    
+    
+    width_here <- case_when(panel_to_do == "PRE" ~ width_factor + 2,
+                            panel_to_do == "IP" ~ width_factor + 2,
+                            panel_to_do == "PEAK" ~ width_factor + 2)
+    
+    height_here <- case_when(panel_to_do == "PRE" ~ 3.35,
+                             panel_to_do == "IP" ~ 3.1,
+                             panel_to_do == "PEAK" ~ 3.6)
+    #  plotpath_now_boxed
+
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_log_",panel_to_do,"_nox.pdf"),    # create PNG for the heat map        
+           gg_test1,
+           width = width_here,        # 5 x 300 pixels
+           height = 3.4,
+           device=cairo_pdf
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )  
+    
+    
+    
+    
+    
+     
+    
+    
+    
+    }
+    
+    #p_info_bound$p <- p_info_bound$ptt_p 
+  clusters_here <- df_mc_frequencies$recluster_ordered %>% unique() %>% sort()  
+    
+    
+    
+    for (cluster_to_plot in clusters_here) {
+      
+    cluster_to_plot <- clusters_here[1]
+    
+    #df_mc_frequencies_no_ctrl_select$recluster_ordered %>% unique()
+    
+    df_mc_frequencies_no_ctrl_select_here <- 
+      df_mc_frequencies_no_ctrl_select %>% 
+      dplyr::filter(recluster_ordered == cluster_to_plot)
+    
+    pw_to_plot <- window_info_labels %>% dplyr::filter(recluster_ordered == cluster_to_plot) %>% 
+      dplyr::select(primary_window) %>% unique() %>% as.character()
+    
+    df_mc_frequencies_no_ctrl_select_here <- 
+      df_mc_frequencies_no_ctrl_select_here %>% 
+      dplyr::filter(window == pw_to_plot)
+
+    
+    
+    #  df_mc_frequencies_no_ctrl_select$me
+    gg_test1 <- ggplot(data = df_mc_frequencies_no_ctrl_select_here) + 
+      geom_boxplot(data = df_mc_frequencies_no_ctrl_select_here,
+                   mapping = aes(x = as.factor(window) , 
+                                 y = log10(batch_PTID_cluster_freq + 0.005),
+                                 fill = as.factor(file_type)),
+                   size = 0.03,alpha = 0.4,
+                   outlier.shape = NA,
+                   outlier.fill = NULL) + 
+      geom_point(data = df_mc_frequencies_no_ctrl_select_here,
+                 mapping = aes(x = as.factor(window) , 
+                               y = log10(batch_PTID_cluster_freq + 0.005),
+                               color = as.factor(file_type)), 
+                 alpha=0.6,#shape = 1,
+                 size = .6, position = pd1) + 
+      #    geom_text(data = n_data_pre,
+      #              mapping = aes(x = as.factor(COVID_stage_fine_short), 
+      #                            y = case_when(subset_here_now == "CD8" ~ 8,TRUE ~ 1.4) ,
+      #                            color = as.factor(pasc_status),
+      #                            label = paste0("n=",as.character(n_per_bin))
+      #              ),alpha = 1,size = 2, position = pd1
+      #    ) +
+      pretty_theme_boxed +     
+      #    scale_fill_discrete() + 
+      #  scale_fill_legend(name=paste0("Cluster")) + 
+      #                         limits = c(-1,5),breaks = seq(-1,5), oob = squish) + 
+      ylab("Log10(Cluster frequencies + 0.005)") + xlab("Stage") + facet_wrap(. ~  recluster_ordered, 
+                                                                              #                                                                              scales = "free",
+                                                                              nrow = 2#,
+                                                                              #                                                                              space = "free", 
+                                                                              ##                                                                              drop=TRUE
+      ) +
+      
+      guides(#shape = guide_legend(nrow = 1, byrow = TRUE,title = paste0("Positivity call"),
+        #                     title.position = "top"),
+        fill = guide_legend(nrow = 2, byrow = TRUE,title = NULL,
+                            title.position = "right"),
+        color = "none"#,
+        #shape = FALSE
+        #           shape = guide_legend(nrow = 1,byrow = TRUE,title = "")
+      ) + scale_fill_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      #    "#fae765","#ad3168","#7667e0","#80bcda"
+      scale_color_manual(values = c(palette_here_file_type_no_ctrl)) + 
+      ggtitle(paste0(T_subtype, " ",subtype," clusters"))
+    
+    #  plotpath_now_boxed
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_",cluster_to_plot,"_log.png"),    # create PNG for the heat map        
+           gg_test1,
+           width = 2.5,        # 5 x 300 pixels
+           height = 3.5,
+           dpi = 400,
+           units = "in",
+           device=png
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )        # smaller font s
+    
+    ggsave(paste0(plotpath_now_zoom_boxed,"/boxplots_select_cluster_freq_per_PTID_",subtype,"_",k_here,"_",sample_label,"_",cluster_to_plot,"_log.pdf"),    # create PNG for the heat map        
+           gg_test1,
+           width = 2.5,        # 5 x 300 pixels
+           height = 3.5,
+           device=cairo_pdf
+           #    res = 1.1*res_here,            # 300 pixels per inch
+           #pointsize = 10
+    )  
+    
+    
+    
+  }
+    
+    
+  }
+  
+  
+  
+  
+  
+  
+  
+  
+  
+}
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+  
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+# Session information
+```{r}
+gc()
+
+sessionInfo()
+```
+
+
+  
+
+
+

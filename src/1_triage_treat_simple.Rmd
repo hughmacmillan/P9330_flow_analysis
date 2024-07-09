@@ -1,0 +1,1435 @@
+#---
+title: "CAR T flow data: batch effect management"
+author: "H. MacMillan, Carla Jaeger"
+date: "2023-12-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+
+ rm(list=ls() ) ### MAYBE START FRESH?
+
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Packages and installs.... 
+
+
+```{r } 
+
+
+do_installs <- TRUE
+
+#-----------------------packages----------------
+
+
+if (do_installs) {
+  
+  if (!require("tidyverse")) {
+    install.packages("tidyverse", dependencies = TRUE)
+  }
+
+    if (!require(flowCore)) { 
+    
+    if(!require(robustbase)){
+      install.packages("robustbase")
+    }
+    BiocManager::install("flowCore")
+    } 
+  
+  if (!require(Rphenograph)) {
+    if(!require(devtools)){
+      install.packages("devtools")
+    }
+    options(buildtools.check = function(action) TRUE )
+    devtools::install_github("JinmiaoChenLab/Rphenograph")
+    options(buildtools.check = function(action) FALSE )
+  }
+  
+  
+  if (!require(ggthemes)) {
+    install.packages("ggthemes")
+  }
+
+  
+    if (!requireNamespace("leiden")) {devtools::install_github("TomKellyGenetics/leiden")}
+  #install.packages("leiden")
+
+  
+  
+  
+  library(leiden)
+  library(Rphenograph)
+  library(RANN)
+  library(flowCore)
+  library(robustbase)
+  library(knitr)
+  library(tidyverse)
+  library(dplyr)
+  library(rstatix)
+  library(ggthemes)
+  library(png)
+  library(uwot)
+library(scales)
+  
+  
+  }
+
+```
+
+# set environment
+
+```{r, echo=FALSE} 
+
+
+  getwd()
+#  setwd("~/Newell_Lab/Jaeger_P9330/src/") 
+#  source("~/Newell_Lab/Jaeger_P9330/src/mc_functions.R")
+  
+
+```
+
+
+
+# run params
+
+```{r }
+
+
+  # SET RUN PARAMETERS ------------------------------------------------------
+  
+  subsets <- c("T")
+  
+  panels <- c("CART")
+  panel_here <- panels[1]
+  subtype <- subsets[1]
+  
+  T_subtype <- "CD8"
+#    T_subtype <- ""
+  
+  sample_N <- 13000 # MAX no. of cells drawn per fcs originially.
+  sample_label <- "13k"  # redundancy to stay on toes ... 
+
+  
+#  INIT CLUSTERING PHENOGRAPH PARAM
+  k_here <- 40
+#  INIT SUBCLUSTERING PHENOGRAPH PARAM
+  k_here_sub <- 20
+#  META CLUSTERING PHENOGRAPH PARAM
+  meta_k_here <- 20 
+#  ONLY DOING DISTANCE AS THE CROW FLIES -- l2
+  p_of_lp_norm <- 2 
+#  
+  
+  just_do_metaclustering <- FALSE
+  # IF ALREADY RUN WITH TRUE AND JUST DOING METACLUSTERING AGAIN
+  run_id <- "raw5alt"
+#  run_id
+  
+  run_id %>% print()
+  
+  meta_id <- "we_cent_spline"
+
+  do_filter_outliers <- TRUE
+  if (do_filter_outliers) print("filtering outliers first")
+  do_shift_tings <- str_detect(meta_id,"cent")
+  if (do_shift_tings) print("centering involved")
+  do_spline_tings <- str_detect(meta_id,"spline")
+  if (do_spline_tings) print("splines involved")
+  
+```
+
+# begin from straight arcsinh(MFI/var)-transformed dataframe.
+
+```{r, echo=FALSE} 
+
+print("run_id")
+print(run_id)
+subtype
+
+#data_path_prepped <- 
+#    paste0("../results_",subtype,"_",T_subtype,"/csv_output_",sample_label,"_",run_id,"/")
+
+
+
+
+#paste0("/Volumes/LaCie_3/4Q_2023/NCI_CCR/results_",subtype,"_",treatment_here,"/csv_output_",sample_label,"_",run_id,"/")
+
+print(paste0("",panel_here," ",subtype," cell data from Dr. Carla Jaeger-Ruckstuhl, Riddell Lab"))
+
+#
+#
+# paste0(data_path_prepped,"df_bound_",subtype,"_",k_here,"_",run_id,"_all.csv")
+#
+#
+
+df_bound <- read_csv(paste0("../downsampled_data",
+                                    "/df_bound_",T_subtype,".csv")) %>% 
+          as.data.frame()# %>% unique()  
+
+params_now <- read_csv(paste0("../downsampled_data","/params_now_",T_subtype,".csv"))
+params_now <- params_now$.
+params_now
+
+batches <- df_bound$sub_batch %>% unique()
+
+
+#------------ initial distributions ----------
+
+
+
+print("#----- more prep for plots ------")
+subtype
+T_subtype
+
+
+plot_path_now <- paste0("../plots_",subtype,"_",T_subtype) 
+plot_path_now
+
+suppressWarnings(dir.create(plot_path_now))
+
+
+details_now <- paste0(T_subtype,"_",subtype,"_cells_",
+                      sample_label,"_",k_here,"_",k_here_sub,"_meta_",meta_k_here,"_",run_id,"_",meta_id)
+
+do_scaling_z_score <- FALSE
+if (do_scaling_z_score) {
+  details_now <- paste0(details_now,"_scaled")
+} else {
+  details_now <- paste0(details_now,"_unscaled")
+}  
+
+
+
+plot_path_now_details <- paste0(plot_path_now,"/",details_now) 
+
+plot_path_now_details %>% print()
+
+suppressWarnings(dir.create(plot_path_now_details))
+#  getwd()
+#  plot_path_now
+
+```
+
+#Specify some samples in different PEAK batches... and gates... -------
+
+
+
+```{r, echo=FALSE} 
+
+# do some viz of initial distributions ---- 
+
+
+# the true batch, corresponding to day running the cytometer!
+
+  RUN3_samples <- c("R3CTRL","X579","X566","X870","X672","X650","X501","X668","X552","X461","X657")
+  RUN2_samples <- c("R2CTRL","X714","X645","X641","X680","X808","X590","X905","X879","X475")
+  RUN1_samples <- c("R1CTRL","X822")
+
+  df_bound <- df_bound %>% mutate(run = case_when((!str_detect(batch,"PEAK")) ~ batch,
+                                                PTID %in% c(RUN1_samples) ~ "PEAK_RUN1",
+                                                PTID %in% c(RUN2_samples) ~ "PEAK_RUN2",
+                                                PTID %in% c(RUN3_samples) ~ "PEAK_RUN3"))
+
+  
+# handy plot function  
+  
+plot_dists <- function(df_bound_here,stage_here) {
+  
+
+thresh_here <- 2
+
+  params_now
+  df_gate_info <- as.data.frame(as.vector(params_now))
+  colnames(df_gate_info) <- "parameter"
+  df_gate_info$value <- thresh_here
+  setdiff(params_now,df_gate_info$parameter %>% unique())
+  
+  df_gate_info <- df_gate_info %>% dplyr::filter(parameter %in% params_now)
+
+
+
+
+
+df_gate_info <- df_gate_info %>% 
+  mutate(value = case_when(parameter == "TCF1" ~ 2.5,
+                           parameter == "CD27" ~ 1.25,
+                           parameter == "CD45RA" ~ 1.5,
+                           parameter == "CD57" ~ 2.5,
+                           parameter == "CD45RO" ~ 2.25,
+                           parameter == "GZMB" ~ 3.0,
+                           parameter == "CCR7" ~ 1,
+                           parameter == "CD95" ~ 1.25,
+                           parameter == "PD1" ~ 1,
+                           parameter == "CD39" ~ 1.5,
+                           parameter == "CD127" ~ 1.5,
+                           parameter == "CD69" ~ 1.25,
+                           parameter == "CD70" ~ 1,
+                           parameter == "HLADR" ~ 1.5,
+                           parameter == "CD122" ~ 1.5,
+                           parameter == "TIM3" ~ 1.25,
+                           parameter == "LAG3" ~ 1.25,
+                           parameter == "CD25" ~ 1.25,
+                           parameter == "TIGIT" ~ 1,
+                           parameter == "EGFRt" ~ 2,
+                           TRUE ~ value))  
+
+
+as300trans <- arcsinhTransform(a=0, b=(1/300))
+as400trans <- arcsinhTransform(a=0, b=(1/400))
+
+  
+pretty_theme_super_tiny_all <- theme(text = element_text(family='Arial'),
+                                 panel.background = element_rect(fill = "white",color="black"),
+                                 panel.grid.major = element_blank(),
+                                 panel.grid.minor = element_blank(),
+                                 plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                                 plot.title = element_text(family='Arial',color="black", size=14, face="bold",margin=margin(1,1,4,0)),
+                                 plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                                 axis.title.x = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(4,0,0,0)),
+                                 axis.title.y = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(0,4,0,0)),
+                                 legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                                 legend.text = element_text(family='Arial',color="black", size=11, face="plain"),
+                                 axis.text.x = element_text(family='Arial',color="black", size=11, face="plain",angle = 30,
+                                                            vjust = 1, hjust=1,margin=margin(0,0,0,0)),
+                                 axis.ticks = element_line(),
+                                 plot.background = element_rect(
+                                   fill = "white",
+                                   colour = "white",
+                                   size = 1),
+                                 strip.background = element_rect(
+                                   fill = "white",
+                                   colour = "white",
+                                   size = 1),
+                                 strip.text.x = element_text(family='Arial',color="black", size=12,
+                                                             face="plain",margin=margin(1,0,2,0)),
+                                 strip.text.y = element_text(family='Arial',color="black", size=8,
+                                                             face="plain",margin=margin(1,0,2,0)),
+                                 axis.text.y = element_text(family='Arial',color="black", size=10,
+                                                            face="plain"),
+                                 legend.key.width=unit(.8, "cm"),
+                                 legend.key.height=unit(0.4, "cm"),
+                                 legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                                 legend.position="top",
+                                 legend.justification="right",
+                                 legend.margin=margin(0,0,0,0),
+                                 legend.box.margin=margin(1,1,1,1),
+                                 legend.background = element_rect(fill = "transparent",
+                                                                  colour = "transparent",
+                                                                  size = 1)
+                                 #                 legend.position = c(1.15, 0.4)
+  )
+  
+  
+  pretty_theme_tiny_all <- theme(text = element_text(family='Arial'),
+                                 panel.background = element_rect(fill = "white",color="black"),
+                                 panel.grid.major = element_blank(),
+                                 panel.grid.minor = element_blank(),
+                                 plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                                 plot.title = element_text(family='Arial',color="black", size=14, face="bold",margin=margin(1,1,4,0)),
+                                 plot.subtitle = element_text(family='Arial',color="black", size=12, face="plain",margin=margin(0,0,0,0)),
+                                 axis.title.x = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(4,0,0,0)),
+                                 axis.title.y = element_text(family='Arial',color="black", size=13, face="bold",margin=margin(0,4,0,0)),
+                                 legend.title = element_text(family='Arial',color="black", size=11, face="plain"),
+                                 legend.text = element_text(family='Arial',color="black", size=11, face="plain"),
+                                 axis.text.x = element_text(family='Arial',color="black", size=11, face="plain",angle = 30,
+                                                            vjust = 1, hjust=1,margin=margin(0,0,0,0)),
+                                 axis.ticks = element_line(),
+                                 plot.background = element_rect(
+                                   fill = "white",
+                                   colour = "white",
+                                   size = 1),
+                                 strip.background = element_rect(
+                                   fill = "white",
+                                   colour = "white",
+                                   size = 1),
+                                 strip.text.x = element_text(family='Arial',color="black", size=12,
+                                                             face="plain",margin=margin(1,0,2,0)),
+                                 strip.text.y = element_text(family='Arial',color="black", size=12,
+                                                             face="plain",margin=margin(1,0,2,0)),
+                                 axis.text.y = element_text(family='Arial',color="black", size=10,
+                                                            face="plain"),
+                                 legend.key.width=unit(.8, "cm"),
+                                 legend.key.height=unit(0.4, "cm"),
+                                 legend.key = element_rect(colour = "transparent", fill = "transparent"),
+                                 legend.position="top",
+                                 legend.justification="right",
+                                 legend.margin=margin(0,0,0,0),
+                                 legend.box.margin=margin(1,1,1,1),
+                                 legend.background = element_rect(fill = "transparent",
+                                                                  colour = "transparent",
+                                                                  size = 1)
+                                 #                 legend.position = c(1.15, 0.4)
+  )
+  
+  
+  files_here <-  df_bound_here$file %>% unique()
+  file_to_test <- files_here[2]  
+  file_to_test %>% print()
+  
+  suppressWarnings(dir.create(
+    paste0(plot_path_now_details,"/init_distributions")))
+  plot_path_now_details
+  
+  batches
+  
+  batch_levels <- batches
+  
+#-----  sub sample by batch -------
+  
+#  df_bound_s <- df_bound[sample(rownames(df_bound),10000),]
+  
+  
+  
+  df_rebound_s_bound <- NULL
+  
+  df_rebound_s_bound %>% dim()
+  batches
+  
+  
+  
+  
+  for (batch_in in batches) {
+    print("hooray")
+    #        batch_in <- batches[7]
+    #      subtype <- subsets[2]
+    #      subtype
+    sub_samp_size <- 2000    
+    
+#    df_bound$s
+    
+    df_rebound_b <- df_bound_here %>% dplyr::filter(sub_batch == batch_in)
+    print(paste0("---------",batch_in,"----------------------"))
+    dim(df_rebound_b)[1] %>% print()
+    
+    
+    samples_here <- df_rebound_b$file %>% unique()
+#    samples_here %>% length()
+#    samples_here_HD <- samples_here[str_detect(samples_here,"HD")]
+#    five_other_samps <- setdiff(samples_here,samples_here_HD)
+#    five_other_samps <- five_other_samps[1:5]
+#    five_other_samps
+#    samples_here_to_sample <- c(samples_here_HD,five_other_samps)
+    
+    df_temp_bound <- NULL
+    for (sample_id_here in samples_here) {
+      print(paste0("....",sample_id_here))
+      df_rebound_b_samp <- df_rebound_b %>% dplyr::filter(file == sample_id_here)
+      sub_samp_size_here <- min(sub_samp_size,dim(df_rebound_b_samp)[1])
+      
+      df_rebound_b_samp <- df_rebound_b_samp[sample(nrow(df_rebound_b_samp), sub_samp_size_here), ]
+      ?sample()
+      #df_rebound_s$batch <- batch_in
+      
+      df_temp_bound <- rbind.data.frame(df_temp_bound,df_rebound_b_samp)
+    }
+    df_rebound_s_bound  <- rbind.data.frame(df_rebound_s_bound,df_temp_bound)
+  }
+  
+
+  
+  df_rebound_s_bound$file %>% unique()
+  
+#  df_rebound_s_bound$b
+  
+  #  
+#  df_rebound_s_bound %>% dim()
+  
+  
+  df_fa_long <- df_rebound_s_bound %>% #dplyr::filter(str_detect(file,"HD")) %>% 
+    pivot_longer(cols = all_of(params_now),names_to = "parameter",values_to = "value")
+  
+  #df_fa_long <- right_join(batch_day_info,df_fa_long)
+  #  dmy()
+  
+  
+  #suppressWarnings(dir.create(paste0("../results_",subtype)))
+  
+  
+
+  #df_fa_long$batch_day %>% unique()
+  #df_fa_long$batch_days <- df_fa_long$batch_day #%>% str_replace("-22$","-2022") %>% mdy() 
+  
+  
+  
+  subset_label <- case_when(subtype == "T" ~ paste0(T_subtype," T"),
+                            TRUE ~ "Non-T")
+  
+  height_here <- case_when(subtype == "T" ~ 20,
+                           TRUE ~ 20)
+  
+  width_here <- case_when(subtype == "T" ~ 30,
+                          TRUE ~ 30)
+  
+  
+  df_gate_info_for_dist <- df_gate_info %>% dplyr::select(all_of(c("parameter","value")))
+  
+
+  
+  df_fa_long <- df_fa_long %>% mutate(file_type = case_when(str_detect(file,"^HIGH") ~ "HIGH",
+                                                            str_detect(file,"^LOW") ~ "LOW",
+                                                            str_detect(file,"^MED") ~ "MED",
+                                                            str_detect(file,"^CLL") ~ "CLL",
+                                                            TRUE ~ "CTRL"))
+  
+  df_fa_long <- df_fa_long %>% 
+    mutate(gate_type = case_when(str_detect(file,"EGFRt") ~ paste0("EGFRt+ ",T_subtype),
+                                 TRUE ~ paste0(T_subtype)))
+  
+  df_fa_long %>% colnames()
+  df_fa_long$type %>% unique()
+  df_fa_long$PTID %>% unique()
+  #df_fa_long$gate %>% unique()
+  #df_fa_long$group <- df_fa_long$type #%>% unique()
+  
+  #df_fa_long <- df_fa_long %>% separate(file,into = c("group","PTID","gate"),sep = "_",remove = FALSE)
+  #df_fa_long$group <- NULL
+  #df_fa_long$gate <- NULL
+  
+  files_types <- df_fa_long$file_type %>% unique()
+  files_types
+
+  #  palette_here_batch <- c("grey50","gold","#a88ddd")
+  
+  palette_here_file_type_ctrl <- c("grey50","#244093","#39b078","#ef9632","#e2282d")
+  
+#  palette_here_file_type_no_ctrl <- c("#244093","#39b078","#ef9632","#e2282d")
+#  palette_here_file_type_high_med_low <- c("#39b078","#ef9632","#e2282d")
+  
+  
+  file_type_levels <- c(files_types[str_detect(files_types,"CTRL")],
+                        files_types[str_detect(files_types,"CLL")],
+                        files_types[str_detect(files_types,"HIGH")],
+                        files_types[str_detect(files_types,"MED")],
+                        files_types[str_detect(files_types,"LOW")]
+  )
+  
+  file_type_levels
+  
+  df_fa_long <- transform(df_fa_long,
+                                 file_type=factor(file_type,
+                                                  levels=c(file_type_levels)))
+  
+  df_fa_long <- transform(df_fa_long,
+                          parameter=factor(parameter,
+                                                  levels=c(params_now)))
+  
+  
+  three_batch_levels <- df_fa_long$batch %>% unique()
+  three_batch_levels
+  
+  df_fa_long <- transform(df_fa_long,
+                          batch=factor(batch,
+                                       levels=c(three_batch_levels)))
+  
+  df_gate_info_for_dist <- transform(df_gate_info_for_dist,
+                          parameter=factor(parameter,
+                                           levels=c(params_now)))
+     
+  palette_here <- palette_here_file_type_ctrl
+  
+#  df_fa_long$
+  
+  
+  
+  df_rebound_s_bound %>% dplyr::filter(str_detect(batch,"PEAK")) %>% dplyr::select("PTID") %>% distinct() %>% t() %>% as.vector() %>% unique() %>% sort()
+  df_rebound_s_bound$file %>% unique()
+  
+  df_fa_long <- df_fa_long %>% mutate(run = case_when((!str_detect(batch,"PEAK")) ~ batch,
+                                                      PTID %in% c(RUN1_samples) ~ "PEAK_1",
+                                                      PTID %in% c(RUN2_samples) ~ "PEAK_2",
+                                                      PTID %in% c(RUN3_samples) ~ "PEAK_3"))
+  
+  #df_fa_long$PTID %>% unique()
+  
+  gg_test1 <- ggplot(data = df_fa_long,
+                     aes(x = value)) + 
+    geom_histogram(aes(y=after_stat(count),
+                       fill=as.factor(file_type)),      # Histogram with density instead of count on y-axis
+                   alpha=0.3,bins = 40,linewidth = 0.2,
+                   #binwidth=0.4
+                   ) +
+    geom_vline(aes(xintercept = value),data=df_gate_info_for_dist,color = "grey20",linewidth = 0.3) +
+#    geom_density(alpha=0.05,linewidth = 0.2 #, 
+#                 #mapping = aes(fill=as.factor(file_type))
+#                 )  + # Overlay with transparent density plot
+    facet_grid(batch + run + file_type + PTID  ~  parameter,
+               scales = "free") + 
+    scale_fill_manual(values = c(palette_here_file_type_ctrl),
+                      name=paste0("")) + 
+    ggtitle(paste0("Distributions of markers across samples and batches")) + 
+    pretty_theme_super_tiny_all
+  #output_path_here
+  
+  path_here_init <- paste0(plot_path_now_details,"/init_distributions")
+  
+  ggsave(paste0(path_here_init,"/distributions_",stage_here,"__",subtype,"_cells_all_by_file.png"),    # create PNG for the heat map        
+         gg_test1,
+         width = 24,        # 5 x 300 pixels
+         height = 40,
+         units = "in",
+         dpi = 300,
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font size
+  
+  do_just_PEAK <- TRUE
+  if (do_just_PEAK) {
+    
+  gg_test1 <- ggplot(data = df_fa_long %>% dplyr::filter(str_detect(batch,"PEAK")),
+                     aes(x = value)) + 
+    geom_histogram(aes(y=after_stat(count),
+                       fill=as.factor(file_type)),      # Histogram with density instead of count on y-axis
+                   alpha=0.3,bins = 40#,
+                   #binwidth=0.4
+    ) +
+#    geom_vline(aes(xintercept = value),data=df_gate_info_for_dist,color = "grey20",linewidth = 0.3) +
+#    geom_density(alpha=.1 #, 
+#                 #mapping = aes(fill=as.factor(file_type))
+#    )  + # Overlay with transparent density plot
+    facet_grid(batch + run + file_type + PTID  ~  parameter,
+               scales = "free") + 
+    scale_fill_manual(values = c(palette_here_file_type_ctrl),
+                      name=paste0("")) + 
+    ggtitle(paste0("Distributions of markers across samples and batches")) + 
+    pretty_theme_super_tiny_all
+  #output_path_here
+  
+  path_here_init <- paste0(plot_path_now_details,"/init_distributions")
+  
+  ggsave(paste0(path_here_init,"/distributions_",stage_here,"__",subtype,"_cells_PEAK_by_file.png"),    # create PNG for the heat map        
+         gg_test1,
+         width = 24,        # 5 x 300 pixels
+         height = 20,
+         units = "in",
+         dpi = 300,
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font size
+  
+  
+  }
+  
+  
+  gg_test1 <- ggplot(data = df_fa_long,
+                     aes(x = value)) + 
+    geom_histogram(aes(y=after_stat(count),
+                       fill=as.factor(file_type)),      # Histogram with density instead of count on y-axis
+                   alpha=0.25,bins = 30,
+#                   binwidth=0.2,
+#                   colour="darkgrey"
+) +
+#    geom_density(alpha=.1#, 
+##                 mapping = aes(fill=as.factor(file_type))
+#                 )  + # Overlay with transparent density plot
+    geom_vline(aes(xintercept = value),data=df_gate_info_for_dist,color = "grey20",linewidth = 0.3) +
+    facet_grid(gate_type + file_type + batch ~  parameter,
+               scales = "free") + 
+    scale_fill_manual(values = c(palette_here_file_type_ctrl),
+                      name=paste0("")) + 
+    ggtitle(paste0("Distributions of markers across samples and batches")) + 
+    pretty_theme_tiny_all
+  #output_path_here
+  
+  path_here_init <- paste0(plot_path_now_details,"/init_distributions")
+  
+  ggsave(paste0(path_here_init,"/distributions_",stage_here,"__",subtype,"_cells_all.png"),    # create PNG for the heat map        
+         gg_test1,
+         width = 25,        # 5 x 300 pixels
+         height = 16,
+         units = "in",
+         dpi = 300,
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font size
+  
+
+
+
+  gg_test1 <- ggplot(data = df_fa_long %>% dplyr::filter(str_detect(file,"CTRL")),
+                     aes(x = value)) + 
+    geom_histogram(aes(y=after_stat(count),
+                       fill=as.factor(file_type)),      # Histogram with density instead of count on y-axis
+                   alpha=0.35,bins = 40,
+#                   binwidth=0.2,
+                   colour="darkgrey") +
+    geom_vline(aes(xintercept = value),data=df_gate_info_for_dist,color = "grey20",linewidth = 0.3) +
+#    geom_density(alpha=.2, 
+#                 mapping = aes(fill=as.factor(file_type)))  + # Overlay with transparent density plot
+#   # geom_vline(aes(xintercept = value),
+   #            data=df_gate_info_for_dist,color = "grey20",linewidth = 0.3) +
+    facet_grid(PTID + sub_batch + run ~  parameter,
+               scales = "free") + 
+    scale_fill_manual(values = c(palette_here),
+                      name=paste0("")) + 
+    ggtitle(paste0("Distributions of markers across Controls")) + 
+    pretty_theme_tiny_all
+  #output_path_here
+  
+  path_here_init <- paste0(plot_path_now_details,"/init_distributions")
+  
+  ggsave(paste0(path_here_init,"/distributions_",stage_here,"__",subtype,"_cells_CTRL.png"),    # create PNG for the heat map        
+         gg_test1,
+         width = 24,        # 5 x 300 pixels
+         height = 12,
+         units = "in",
+         dpi = 300,
+         device=png
+         #    res = 1.1*res_here,            # 300 pixels per inch
+         #pointsize = 10
+  )        # smaller font size
+  
+  
+  
+  
+}
+
+
+do_some_viz <- TRUE
+
+if (do_some_viz) {
+  
+plot_dists(df_bound,"init")
+  
+  print("")
+  
+  }
+
+
+```
+
+
+
+#Filter 0.1 percent... maybe.
+```{r, echo=FALSE} 
+
+
+
+params_now
+
+# ------ do_filter_outliers ------------
+
+#do_filter_outliers <- TRUE
+
+if (do_filter_outliers) {
+  
+print("do filter outliers")  
+  
+high_filter_dataframe <- function(df,params_here) {
+  # Extract protein columns
+  
+#  df <- df_bound
+#  params_here <- params_now
+  protein_columns <- params_here
+  # Tax the billionaires
+  # Find the 99.9th percentile for each parameter
+  percentiles <- df %>%
+    dplyr::select(all_of(protein_columns)) %>%
+    summarise(across(everything(), quantile, probs = 0.999))
+  percentiles %>% colnames()
+  # Create a boolean mask for filtering rows
+  percentiles
+  df_trimmed <- NULL
+  count <- 0
+  for (param_here in params_here) {
+    
+    if (count == 0) {
+      df_trimmed <- df
+    }
+    count <- count + 1
+    
+    #params_here_var
+    params_here_var_sym <- sym(param_here)
+    outlier_val_here <- percentiles[param_here] %>% as.numeric()
+    outlier_val_here
+    df_trimmed <- df_trimmed %>%
+      dplyr::filter(!!params_here_var_sym <= outlier_val_here)
+    df_trimmed %>% dim() %>% print()
+  }  
+
+  return(df_trimmed)
+}
+
+low_filter_dataframe <- function(df,params_here) {
+  # Extract protein columns
+  
+  #  df <- df_bound
+  #  params_here <- params_now
+  protein_columns <- params_here
+  
+  # Find the 99.9th percentile for each protein column
+  percentiles <- df %>%
+    dplyr::select(all_of(protein_columns)) %>%
+    summarise(across(everything(), quantile, probs = 0.001))
+  percentiles %>% colnames()
+  # Create a boolean mask for filtering rows
+  percentiles
+  df_trimmed <- NULL
+  count <- 0
+  for (param_here in params_here) {
+    
+    if (count == 0) {
+      df_trimmed <- df
+    }
+    count <- count + 1
+    
+    #params_here_var
+    params_here_var_sym <- sym(param_here)
+    outlier_val_here <- percentiles[param_here] %>% as.numeric()
+    outlier_val_here
+    df_trimmed <- df_trimmed %>%
+      dplyr::filter(!!params_here_var_sym >= outlier_val_here)
+    df_trimmed %>% dim() %>% print()
+  }  
+  
+  return(df_trimmed)
+}
+
+df_bound_new <- high_filter_dataframe(df_bound,params_now)
+df_bound_new <- low_filter_dataframe(df_bound_new,params_now)
+df_bound_og <- df_bound
+#df_bound <- df_bound_og
+df_bound <- df_bound_new
+
+} else {
+
+df_bound_og <- df_bound
+
+}
+
+
+
+
+
+
+
+plot_dists(df_bound,"clipped")
+
+print("clipped and plotted")
+
+
+```
+
+
+
+#clip previously ungated CD45RO neg 
+```{r, echo=FALSE} 
+
+
+#--- clip previously ungated CD45RO neg (notably for X641 and X680 for CD8) and EGFRt neg ------
+
+if (TRUE) {
+  
+  df_bound <- df_bound %>% dplyr::filter(!(str_detect(PTID,"X") & str_detect(run,"PEAK") & CD45RO < 2.25))
+  
+#  df_bound %>% dplyr::filter((str_detect(run,"IP"))) %>% dim()
+  
+  df_bound <- df_bound %>% dplyr::filter(!(str_detect(PTID,"X") & str_detect(run,"PEAK") & EGFRt < 2.25))
+  
+  #df_bound %>% dplyr::filter(!(str_detect(PTID,"X") & str_detect(run,"PEAK") & EGFRt < 2.25
+  #                             )) %>% dim()
+  
+  
+  
+  
+}
+
+plot_dists(df_bound,"clipped_again")
+
+print("")
+
+```
+
+
+
+#----- Adjust for technical artifacts in TIGIT in PEAK batches --------------
+
+
+```{r, echo=FALSE} 
+
+
+#----- Adjust for technical artifacts in TIGIT in PEAK batches --------------
+
+
+do_shift_tings <- TRUE
+
+if (do_shift_tings) {
+  
+  #df_bound_here <- df_bound
+  #run_here <- "PEAK_RUN2"
+  #param_here <- "TIGIT"
+  #df_bound_here$file %>% unique()
+  
+  get_param_medians_run_param <- function(df_bound_here,run_here,param_here) {
+    df_bound_here$run %>% unique()  
+    df_tester <- df_bound_here %>% dplyr::filter(str_detect(file,"CTRL")) %>%
+      dplyr::filter(run == run_here) %>% as.data.frame() %>% 
+      dplyr::select(all_of(c(param_here)))
+    
+    c_names <- colnames(df_tester)
+    df_tester[,c(param_here)] %>% summary()
+    mean_here <- df_tester[,c(param_here)]  %>% as.matrix() %>% colMeans()
+    
+    #      cluster_medians <- df_tester %>% as.matrix() %>% colMedians()
+    mean_here <- mean_here %>% t() %>% as.data.frame() 
+    
+    colnames(mean_here) <- param_here
+    
+    return(mean_here)
+  }
+  
+  
+  
+  #df_bound_here$batch %>% unique()
+  get_param_medians_batch_param <- function(df_bound_here,batch_here,param_here) {
+    df_bound_here$run %>% unique()  
+    df_tester <- df_bound_here %>% dplyr::filter(str_detect(file,"CTRL")) %>%
+      dplyr::filter(batch == batch_here) %>% as.data.frame() %>% 
+      dplyr::select(all_of(c(param_here)))
+    
+    c_names <- colnames(df_tester)
+    df_tester[,c(param_here)] %>% summary()
+    mean_here <- df_tester[,c(param_here)]  %>% as.matrix() %>% colMeans()
+    
+    #      cluster_medians <- df_tester %>% as.matrix() %>% colMedians()
+    mean_here <- mean_here %>% t() %>% as.data.frame() 
+    
+    colnames(mean_here) <- param_here
+    
+    return(mean_here)
+  }
+  
+  
+  # deal w/ TIGIT ---- and variation across peak 
+  df_bound$batch %>% unique()
+  df_bound$sub_batch %>% unique()
+  
+  
+  # get mean TIGIT val of CTRL cells in PEAK batches overall 
+  
+  PEAK_TIGIT_mean <- get_param_medians_batch_param(df_bound,"PEAK","TIGIT")
+  
+  # mean CTRL TIGIT val of each PEAK batch
+  
+  R1_TIGIT_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN1","TIGIT")
+  
+  R2_TIGIT_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN2","TIGIT")
+  
+  R3_TIGIT_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN3","TIGIT")
+
+  
+  print(c(R1_TIGIT_mean,R2_TIGIT_mean,R3_TIGIT_mean,PEAK_TIGIT_mean))
+  
+    # also gonna deal w/ CCR7 ---- and variation across peak batches ------ 
+
+  PEAK_CCR7_mean <- get_param_medians_batch_param(df_bound,"PEAK","CCR7")
+  R1_CCR7_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN1","CCR7")
+  R2_CCR7_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN2","CCR7")
+  R3_CCR7_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN3","CCR7")
+  
+  
+  print(c(PEAK_CCR7_mean,R1_CCR7_mean,
+          R2_CCR7_mean,
+          R3_CCR7_mean))
+  
+  # deal w/ CD127 ---- and variation across peak ---------
+
+  PEAK_CD127_mean <- get_param_medians_batch_param(df_bound,"PEAK","CD127")
+  R1_CD127_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN1","CD127")
+  R2_CD127_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN2","CD127")
+  R3_CD127_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN3","CD127")
+  
+  PEAK_CD127_mean
+  R1_CD127_mean
+  R2_CD127_mean
+  R3_CD127_mean
+
+  # set aside rows of df that from non-PEAK batches
+  
+  df_bound_non_PEAK <- df_bound %>% dplyr::filter(batch != "PEAK")
+  
+  df_bound_PEAK1 <- df_bound %>% dplyr::filter(run == "PEAK_RUN1")
+  df_bound_PEAK2 <- df_bound %>% dplyr::filter(run == "PEAK_RUN2")
+  df_bound_PEAK3 <- df_bound %>% dplyr::filter(run == "PEAK_RUN3")
+  
+  
+  conf_factor <- 0.75
+  
+  #TIGIT ---------------  align means of PEAK batches
+  
+  dim_here <- dim(df_bound_PEAK3)[1]
+  adjustment_here <- PEAK_TIGIT_mean$TIGIT - R3_TIGIT_mean$TIGIT
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  
+  
+  # if PEAK3 CTRL TIGIT val is on the high-end, we drag PEAK3 sample TIGIT vals down 
+  # by adjustment_dat ... perhaps with only partial confidence after seeing TIGIT vals 
+  # across files between PEAK2 and PEAK3 batches. 
+  
+  df_bound_PEAK3$TIGIT <-  df_bound_PEAK3$TIGIT + conf_factor*adjustment_dat 
+  
+  # Same for second batch of PEAK
+  
+  dim_here <- dim(df_bound_PEAK2)[1]
+  adjustment_here <- PEAK_TIGIT_mean$TIGIT - R2_TIGIT_mean$TIGIT
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK2$TIGIT <-  df_bound_PEAK2$TIGIT + conf_factor*adjustment_dat  
+
+    # Same for first batch of PEAK
+
+    dim_here <- dim(df_bound_PEAK1)[1]
+  adjustment_here <- PEAK_TIGIT_mean$TIGIT - R1_TIGIT_mean$TIGIT
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK1$TIGIT <-  df_bound_PEAK1$TIGIT + conf_factor*adjustment_dat  
+  
+  
+  
+#  CCR7 -------- align means of PEAK batches
+  
+  dim_here <- dim(df_bound_PEAK3)[1]
+  adjustment_here <- PEAK_CCR7_mean$CCR7 - R3_CCR7_mean$CCR7
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK3$CCR7 <-  df_bound_PEAK3$CCR7 + conf_factor*adjustment_dat 
+
+    dim_here <- dim(df_bound_PEAK2)[1]
+  adjustment_here <- PEAK_CCR7_mean$CCR7 - R2_CCR7_mean$CCR7
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK2$CCR7 <-  df_bound_PEAK2$CCR7 + conf_factor*adjustment_dat  
+  
+   dim_here <- dim(df_bound_PEAK1)[1]
+  adjustment_here <- PEAK_CCR7_mean$CCR7 - R1_CCR7_mean$CCR7
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK1$CCR7 <-  df_bound_PEAK1$CCR7 + conf_factor*adjustment_dat  
+  
+#  CD127 ------------- align means of PEAK batches
+  
+  
+  dim_here <- dim(df_bound_PEAK3)[1]
+  adjustment_here <- PEAK_CD127_mean$CD127 - R3_CD127_mean$CD127
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK3$CD127 <-  df_bound_PEAK3$CD127 + conf_factor*adjustment_dat 
+  
+  dim_here <- dim(df_bound_PEAK2)[1]
+  adjustment_here <- PEAK_CD127_mean$CD127 - R2_CD127_mean$CD127
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK2$CD127 <-  df_bound_PEAK2$CD127 + conf_factor*adjustment_dat  
+  
+  
+  dim_here <- dim(df_bound_PEAK1)[1]
+  adjustment_here <- PEAK_CD127_mean$CD127 - R1_CD127_mean$CD127
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK1$CD127 <-  df_bound_PEAK1$CD127 + conf_factor*adjustment_dat  
+  
+  
+  # --- TIM3 --------- align PEAK TIM3 w/ IP TIM3 among controls -----
+  
+  
+  if (TRUE) { # 
+    
+  IP_TIM3_mean <- get_param_medians_run_param(df_bound,"IP","TIM3")
+  PEAK_TIM3_mean <- get_param_medians_batch_param(df_bound,"PEAK","TIM3")
+  
+  R1_TIM3_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN1","TIM3")
+  R2_TIM3_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN2","TIM3")
+  R3_TIM3_mean <- get_param_medians_run_param(df_bound,"PEAK_RUN3","TIM3")
+  
+  sink()
+  PEAK_TIM3_mean %>% print()
+  R1_TIM3_mean %>% print()
+  R2_TIM3_mean %>% print()
+  R3_TIM3_mean %>% print()
+  
+  dim_here <- dim(df_bound_PEAK3)[1]
+  adjustment_here <- IP_TIM3_mean$TIM3 - R3_TIM3_mean$TIM3
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK3$TIM3 <-  df_bound_PEAK3$TIM3 + conf_factor*adjustment_dat 
+  
+  dim_here <- dim(df_bound_PEAK2)[1]
+  adjustment_here <- IP_TIM3_mean$TIM3 - R2_TIM3_mean$TIM3
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK2$TIM3 <-  df_bound_PEAK2$TIM3 + conf_factor*adjustment_dat 
+  
+  dim_here <- dim(df_bound_PEAK1)[1]
+  adjustment_here <- IP_TIM3_mean$TIM3 - R1_TIM3_mean$TIM3
+  adjustment_dat <- replicate(dim_here,adjustment_here) %>% t() %>% as.data.frame()
+  adjustment_dat <- adjustment_dat %>% t()
+  df_bound_PEAK1$TIM3 <-  df_bound_PEAK1$TIM3 + conf_factor*adjustment_dat 
+  }
+  
+  
+  
+  df_bound <- rbind.data.frame(
+    rbind.data.frame(
+    rbind.data.frame(df_bound_non_PEAK,df_bound_PEAK1),
+    df_bound_PEAK2),
+    df_bound_PEAK3)
+  
+  rm(df_bound_non_PEAK,df_bound_PEAK1,df_bound_PEAK2,df_bound_PEAK3)
+  
+  
+  # ---------- redo viz ----------- 
+  
+  do_some_viz <- TRUE
+  
+  if (do_some_viz) {
+    
+    plot_dists(df_bound,"shifted")
+    
+  }
+  
+  print("")
+  
+  
+}
+
+
+
+
+
+
+
+
+
+
+```
+
+
+#---------- Use b-splines to better align selected quantiles  cytonorm ---------------
+
+
+```{r, echo=FALSE} 
+
+
+#---------- Use b-splines to better align selected quantiles a la cytonorm ---------------
+
+
+do_spline_tings
+
+if (do_spline_tings) {
+  
+  # --- fancy cubic spline smooth transformations ------ 
+
+
+  # select quantiles to align --- 
+probs_spec_knots <- c(#0.001,0.01,0.03,
+                      seq(0.1,0.9,0.2)#,
+                      #0.97,0.99,0.999
+                      )
+
+
+#----- quantile info ---- 
+
+quantiles_df <- df_bound %>%
+  filter(str_detect(file,"CTRL")) %>%
+  group_by(PTID, run) %>%
+  reframe(across(c(params_now), quantile, 
+                   probs = probs_spec_knots, 
+                   na.rm = TRUE), .groups = 'drop') %>% distinct()
+
+#quantiles_df %>% view()
+
+quantiles_df$quantile <- quantiles_df %>% rownames() %>% as.numeric() #%>% %%9
+
+#quantiles_df %>% view()
+
+#%>% unique()
+
+
+df_probs_spec_knots <- probs_spec_knots %>% as.data.frame()
+
+colnames(df_probs_spec_knots) <- "knots" 
+df_probs_spec_knots$order <- rownames(df_probs_spec_knots)
+df_probs_spec_knots
+length_here <- length(probs_spec_knots)
+
+quantiles_df$order <- quantiles_df$quantile %% length_here 
+#quantiles_df %>% view()
+
+
+
+
+df_probs_spec_knots$order <- df_probs_spec_knots$order %>% as.numeric()
+
+df_probs_spec_knots$order <- df_probs_spec_knots$order %% length_here
+
+#quantiles_df$order <- quantiles_df$quantile
+quantiles_df <- right_join(df_probs_spec_knots,quantiles_df)
+
+quantiles_df$quantile <- quantiles_df$knots
+
+quantiles_df$knots <- NULL
+
+
+
+run_quantiles_df_999 <- df_bound %>%
+  filter(str_detect(file,"CTRL")) %>%
+  group_by(run) %>%
+  summarise(across(c(params_now), quantile, 
+                   probs = c(0.999), na.rm = TRUE), .groups = 'drop')
+run_quantiles_df_99 <- df_bound %>%
+  filter(str_detect(file,"CTRL")) %>%
+  group_by(run) %>%
+  summarise(across(c(params_now), quantile, 
+                   probs = c(0.99), na.rm = TRUE), .groups = 'drop')
+
+run_quantiles_df_9 <- df_bound %>%
+  filter(str_detect(file,"CTRL")) %>%
+  group_by(run) %>%
+  summarise(across(c(params_now), quantile, 
+                   probs = c(0.9), na.rm = TRUE), .groups = 'drop')
+
+
+tot_quantiles_df_99 <- df_bound %>%
+  #filter(str_detect(file,"CTRL")) %>%
+  #group_by(run) %>%
+  summarise(across(c(params_now), quantile, 
+                   probs = c(0.99), na.rm = TRUE), .groups = 'drop')
+
+
+tot_quantiles_df_9 <- df_bound %>%
+  #filter(str_detect(file,"CTRL")) %>%
+  #group_by(run) %>%
+  summarise(across(c(params_now), quantile, 
+                   probs = c(0.9), na.rm = TRUE), .groups = 'drop')
+
+
+
+#run_quantiles_df_999 %>% view()
+#run_quantiles_df_99 %>% view()
+#run_quantiles_df_9 %>% view()
+
+#quantiles_df %>% view()
+
+
+
+quantiles_df <- quantiles_df %>% mutate(quantile = paste0("quantile_",quantile))
+
+
+#c(seq(0.1,0.9,0.1))
+
+quantiles_df_long <- pivot_longer(quantiles_df,
+                                  cols = all_of(c(params_now)),names_to = "parameter")
+
+#quantiles_df_long %>% view()
+
+representative_quantiles <- pivot_longer(quantiles_df %>% dplyr::filter(!str_detect(run,"PEAK")),
+                                         cols = all_of(c(params_now)),names_to = "parameter") %>% 
+  #dplyr::filter(str_detect(PTID,R))
+  group_by(parameter,quantile) %>%
+  summarise(across(starts_with("value"), 
+                   mean, na.rm = TRUE), .groups = 'drop')
+
+#representative_quantiles %>% view()
+
+representative_quantiles_wide <- 
+  representative_quantiles %>% pivot_wider(names_from = "quantile")
+
+#representative_quantiles_wide %>% view()
+#quantiles_df_long$
+#quantiles_df_long %>% view()
+
+quantiles_df_long$order <- NULL
+quantiles_df_long_wide <-  
+  quantiles_df_long %>% pivot_wider(names_from = "quantile")
+
+#quantiles_df_long_wide %>% view()
+#quantiles_df_long_wide %>% view()
+#?smooth.spline()
+#df_bound %>% dplyr::filter(cell_id == 1) %>% view()
+
+other_cols <- setdiff(colnames(df_bound),params_now)
+
+# --- loop through parameters to be given royal spline treatment ---- 
+
+df_bound_new <- df_bound
+
+params_now_transforming <- c("TCF1","CCR7",
+                             "CD127",
+                             #"CD45RA","CD45RO",
+                             "LAG3",
+                             "CD39",
+                             "PD1",
+                             "TIGIT","TIM3"#,
+#                             "CD25",
+#                             "CD69"#,
+#                             "CD70"
+                             )
+
+
+df_rebound_other <- NULL
+df_rebound_full <- NULL
+
+
+
+
+for (param_here in params_now) {
+  
+  df_rebound_transformed <- NULL 
+#  param_here <- params_now[15]
+ param_here 
+ #params_now
+  rep_for_fit <- representative_quantiles_wide %>% 
+    dplyr::filter(parameter == param_here) %>% 
+    select(starts_with("quantile")) %>% 
+    as.matrix()
+
+  
+  rep_for_fit
+
+
+ctrl_samp_quantiles <- 
+  quantiles_df_long_wide %>% dplyr::filter(parameter == param_here) #%>% view()
+
+ctrl_samp_quantiles %>% dim()
+#ctrl_samp_quantiles %>% view()
+runs_here <- ctrl_samp_quantiles$run %>% unique()
+
+runs_here
+
+for (run_here in runs_here) {
+  run_here 
+#run_here <- runs_here[5]
+
+df_bound_here  <- df_bound_new %>% dplyr::filter(run == run_here)
+
+ctrl_samp_quantiles_run <- ctrl_samp_quantiles %>% dplyr::filter(run == run_here)
+
+ctrl_samp_quantiles_dat <- ctrl_samp_quantiles_run %>% 
+  dplyr::select(all_of(starts_with("quantile")))
+
+#ctrl_samp_quantiles_dat %>% view()
+rep_for_fit
+
+spline_fit <- smooth.spline(y = rep_for_fit, x = ctrl_samp_quantiles_dat)
+
+#spline_fit
+
+df_for_trans <- df_bound_here %>% dplyr::select(all_of(param_here))
+#df_for_trans %>% head()
+
+#df_for_trans$TCF1
+#predict(spline_fit, x = df_for_trans)
+
+if (param_here %in% c(params_now_transforming)) {
+  df_transformed <- predict(spline_fit, x = df_for_trans,deriv = 0) %>% as.data.frame()
+  #df_transformed %>% view()
+  colnames(df_transformed)
+  
+  df_transformed <- df_transformed %>% dplyr::select(-all_of(param_here)) 
+  colnames(df_transformed) <- param_here
+  colnames(df_transformed) 
+} else {
+  df_transformed <- df_for_trans
+}
+#df_transformed %>% view()
+
+if (param_here  == params_now[1]) {
+
+  
+df_bound_here_other <- df_bound_here %>% dplyr::select(all_of(other_cols))
+
+
+df_rebound_other <- rbind.data.frame(df_rebound_other,df_bound_here_other)
+
+df_rebound_other %>% dim() %>% print()
+
+}
+
+df_rebound_transformed <- rbind.data.frame(df_rebound_transformed,df_transformed)
+df_rebound_transformed %>% dim()
+
+}
+
+df_rebound_transformed <- df_rebound_transformed %>% as.data.frame()
+df_rebound_transformed %>% dim()
+
+df_rebound_full %>% dim()
+if (param_here == params_now[1]) {
+  df_rebound_full <- df_rebound_transformed
+} else {
+  df_rebound_full <- cbind.data.frame(df_rebound_full,df_rebound_transformed) 
+}
+
+}
+
+df_rebound_full <- cbind.data.frame(df_rebound_other,df_rebound_full)
+
+
+
+#df_rebound_full %>% head()
+
+
+# actually use above to spline things--------
+
+  
+  
+  
+  df_bound_new <- df_rebound_full
+  
+
+
+} 
+
+
+plot_dists(df_bound_new,"splined")
+
+print("")
+
+
+
+
+
+
+```
+
+
+
+#--- go cluster -----------
+```{r, echo=FALSE} 
+
+df_bound <- df_bound_new
+
+
+plot_path_now_details_data <- paste0(plot_path_now_details,"/data")
+
+suppressWarnings(dir.create(plot_path_now_details_data))
+df_bound %>% write_csv(paste0(plot_path_now_details_data,"/df_bound.csv"))
+as.data.frame(params_now) %>% write_csv(paste0(plot_path_now_details_data,"/params_now.csv"))
+
+
+
+
+
+# Session information
+
+
+```{r}
+
+gc()
+
+sessionInfo()
+```
+
+
+
+
+
+  
+
+
+
