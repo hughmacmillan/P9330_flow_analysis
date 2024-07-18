@@ -4,7 +4,7 @@
 
 
 
-do_installs <- FALSE
+do_installs <- TRUE
 
 #-----------------------packages----------------
 
